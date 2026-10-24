@@ -7,17 +7,19 @@
 # query/write audit trail
 audit.log
 
-# throwaway test databases
-e2e_tmp.db
 
-# web UI and background-worker pieces — kept locally, not part of the public MCP server repo
-index.html
-static/
+# old web UI / background-worker pieces (moved to ../legacy-webui); the live UI is static/index.html
+/index.html
 celery_app.py
 tasks.py
 sql.py
 supabase_schema.sql
 README_pbiviz.md
+
+# one-off local tools
+tools/
+*.db
+e2e_tmp.db
 
 # downloaded model, caches, build junk
 face_landmarker.task
@@ -25,3 +27,10 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .code-review-graph/
+
+# deployment settings: roles and user identities (edit via the Settings page)
+config/rbac.json
+
+# test suites stay local
+tests/
+.github/workflows/

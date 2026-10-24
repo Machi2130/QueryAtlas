@@ -187,27 +187,48 @@ def clear_user_query_cache(user_id: str) -> int:
 _rate_counters: dict[str, tuple[int, float]] = {}
 
 
-def check_rate_limit(user_id: str) -> tuple[bool, int, int]:
+def check_rate_limit(user_id: str, limit: int | None = None, window: int | None = None,
+                     kind: str = "ratelimit") -> tuple[bool, int, int]:
+    """Count one event for (kind, user_id) in a fixed window; (allowed, count, seconds left).
+    In Redis when configured, so the limit holds across every server process."""
+    limit, window = limit or RATE_LIMIT, window or RATE_WINDOW
     r = get_redis()
     if r:
-        key = f"ratelimit:{user_id}"
+        key = f"{kind}:{user_id}"
         pipe = r.pipeline()
         pipe.incr(key)
         pipe.ttl(key)
         count, ttl = pipe.execute()
         if ttl == -1:
-            r.expire(key, RATE_WINDOW)
-            ttl = RATE_WINDOW
-        return count <= RATE_LIMIT, int(count), max(0, int(ttl))
+            r.expire(key, window)
+            ttl = window
+        return count <= limit, int(count), max(0, int(ttl))
     else:
         now = time.time()
-        count, window_start = _rate_counters.get(user_id, (0, now))
-        if now - window_start > RATE_WINDOW:
+        key = f"{kind}:{user_id}"
+        count, window_start = _rate_counters.get(key, (0, now))
+        if now - window_start > window:
             count, window_start = 0, now
         count += 1
-        _rate_counters[user_id] = (count, window_start)
-        ttl = max(0, int(RATE_WINDOW - (now - window_start)))
-        return count <= RATE_LIMIT, count, ttl
+        _rate_counters[key] = (count, window_start)
+        ttl = max(0, int(window - (now - window_start)))
+        return count <= limit, count, ttl
+
+
+def recent_count(user_id: str, kind: str, window: int) -> int:
+    """How many (kind, user_id) events are counted in the current window, without adding one."""
+    r = get_redis()
+    if r:
+        return int(r.get(f"{kind}:{user_id}") or 0)
+    count, window_start = _rate_counters.get(f"{kind}:{user_id}", (0, 0.0))
+    return count if time.time() - window_start <= window else 0
+
+
+def clear_count(user_id: str, kind: str) -> None:
+    r = get_redis()
+    if r:
+        r.delete(f"{kind}:{user_id}")
+    _rate_counters.pop(f"{kind}:{user_id}", None)
 
 
 # ═══════════════════════════════════════════════════════════════
