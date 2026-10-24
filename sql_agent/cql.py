@@ -73,7 +73,7 @@ def validate(query: str, schema_dict: dict) -> str:
         if is_sensitive(quoted or bare):
             raise QueryValidationError(f"Access to sensitive column '{quoted or bare}' is blocked.")
     table = table_of(q)
-    if table not in {t.lower() for t in schema_dict} and table not in schema_dict:
+    if table not in schema_dict:   # _name already applied CQL folding; names are exact
         raise QueryValidationError(f"Table '{table}' not in schema.")
     if not re.search(r"\bLIMIT\b", blanked, re.IGNORECASE):
         allow = re.search(r"\bALLOW\s+FILTERING\b", blanked, re.IGNORECASE)
@@ -86,11 +86,10 @@ def apply_scope(query: str, scope: dict | None, schema_dict: dict) -> tuple[str,
     if not scope:
         return query, []
     table = table_of(query)
-    scoped = {t.lower(): t for t in scope["tables"]}
-    if table not in scoped:
+    if table not in scope["tables"]:   # exact: a quoted "Notes" must not slip past a lower-cased map
         return query, []
     column, value = scope["column"], str(scope["value"])
-    kind = next((c.split(" ", 1)[1].strip("()").lower() for c in schema_dict.get(scoped[table], [])
+    kind = next((c.split(" ", 1)[1].strip("()").lower() for c in schema_dict.get(table, [])
                  if c.split(" ")[0].lower() == column.lower()), "text")
     if kind in _NUMERIC:
         if not re.fullmatch(r"-?\d+(\.\d+)?", value):
@@ -109,7 +108,7 @@ def apply_scope(query: str, scope: dict | None, schema_dict: dict) -> tuple[str,
                  else f"{query} WHERE {condition}")
     if not re.search(r"\bALLOW\s+FILTERING\b", _blank(query), re.IGNORECASE):
         query += " ALLOW FILTERING"   # the tenant column is usually not part of the key
-    return query, [scoped[table]]
+    return query, [table]
 
 
 _WRITE_TABLE = re.compile(r'^\s*(?:INSERT\s+INTO|UPDATE|DELETE\b.*?\bFROM)\s+("[^"]+"|\w+)(\s*\.\s*("[^"]+"|\w+))?',
@@ -146,7 +145,7 @@ def parse_write(query: str, schema_dict: dict, allow_ddl: bool) -> tuple[str, st
     if m.group(2):
         raise QueryValidationError("Use the bare table name: this connection writes one keyspace.")
     table = _name(m.group(1))
-    if table not in {t.lower() for t in schema_dict} and table not in schema_dict:
+    if table not in schema_dict:   # _name already applied CQL folding; names are exact
         raise QueryValidationError(f"Table '{table}' not in schema.")
     if re.match(r"\s*(UPDATE|DELETE)\b", blanked, re.IGNORECASE) and not re.search(r"\bWHERE\b", blanked, re.IGNORECASE):
         raise QueryValidationError("UPDATE/DELETE needs a WHERE clause.")
