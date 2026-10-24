@@ -34,6 +34,8 @@ def fmt_value(v: Any) -> str:
     if isinstance(v, int):
         return f"{v:,}"
     if isinstance(v, float):
+        if v != v or v in (float("inf"), float("-inf")):   # NaN / infinity: int() would raise
+            return str(v)
         return f"{v:,.2f}".rstrip("0").rstrip(".") if v != int(v) else f"{int(v):,}"
     return str(v)
 

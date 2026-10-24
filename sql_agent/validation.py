@@ -40,12 +40,16 @@ _BLOCKED_FN = re.compile(
     r"row_to_json|to_json|to_jsonb|json_agg|jsonb_agg|json_object_agg|jsonb_object_agg|"
     r"xmlforest|xmlagg|hstore|for_json|json_object|json_arrayagg|json_objectagg)\s*\(", re.IGNORECASE
 )
-_COMMENT = re.compile(r"/\*.*?\*/|--[^\n]*|#[^\n]*", re.DOTALL)   # /*!50000 ... */ is live SQL on MySQL
+_COMMENT = re.compile(r"/\*.*?\*/|--[^\n]*", re.DOTALL)   # /*!50000 ... */ is live SQL on MySQL
+_COMMENT_MYSQL = re.compile(r"/\*.*?\*/|--[^\n]*|#[^\n]*", re.DOTALL)   # '#' comments exist only on MySQL
+MAX_LIMIT = 5000   # an explicit LIMIT above this is clamped: a cap, not a suggestion
 
 
-def strip_comments(sql: str) -> str:
+def strip_comments(sql: str, flavor: str = "") -> str:
     """Comments removed, outside string literals. Refuses a comment that MySQL would execute
-    (/*! ... */): a UNION hidden there would run while every scanner skipped it."""
+    (/*! ... */): a UNION hidden there would run while every scanner skipped it. '#' starts a
+    comment on MySQL only; elsewhere it is an operator (PostgreSQL's #> JSON path)."""
+    comment = _COMMENT_MYSQL if flavor in ("MySQL", "MariaDB") else _COMMENT
     out, i, n = [], 0, len(sql)
     while i < n:
         ch = sql[i]
@@ -53,7 +57,7 @@ def strip_comments(sql: str) -> str:
             m = _STRING_LITERAL.match(sql, i)
             if m:
                 out.append(m.group(0)); i = m.end(); continue
-        m = _COMMENT.match(sql, i)
+        m = comment.match(sql, i)
         if m:
             if m.group(0).startswith("/*!"):
                 raise QueryValidationError("MySQL conditional comments (/*! ... */) are not allowed.")
@@ -165,12 +169,21 @@ def _check_sensitive(tree: exp.Expression, schema_dict: dict) -> None:
         if isinstance(col.this, exp.Star):
             if col.table.lower() in row_names and not isinstance(col.parent, exp.Select):
                 raise QueryValidationError(f"'{col.sql()}' outside the SELECT list is not allowed; name the columns.")
+            # 'u.*' inside a subquery whose FROM does not define u (LATERAL / CROSS APPLY reaching an
+            # outer table): the star expander only sees the subquery's own sources, so it would stay.
+            select = col.parent if isinstance(col.parent, exp.Select) else None
+            if select is not None and col.table.lower() in row_names:
+                own = {(s.alias or s.name).lower() for s in
+                       ([select.args["from"].this] if select.args.get("from") else [])
+                       + [j.this for j in select.args.get("joins") or []]}
+                if col.table.lower() not in own:
+                    raise QueryValidationError(f"'{col.sql()}' refers to a table outside this subquery; name the columns.")
         elif not col.table and col.name.lower() in row_names and col.name.lower() not in known_columns:
             raise QueryValidationError(f"Whole-row reference '{col.name}' is not allowed; name the columns.")
 
 
 def validate_sql(query: str, schema_dict: dict, flavor: str, question: str) -> str:
-    q = strip_comments(query).strip()
+    q = strip_comments(query, flavor).strip()
     blanked = _STRING_LITERAL.sub("''", q)
     # One statement: a ';' outside a standard '...' literal is refused even where the parser
     # would see one statement, in case a driver reads quotes differently (backslash escapes).
@@ -205,9 +218,17 @@ def validate_sql(query: str, schema_dict: dict, flavor: str, question: str) -> s
     rewritten = _expand_stars(tree, columns_of)
     # The cap goes on the outermost statement (from the parse tree): a TOP/LIMIT inside a CTE
     # or subquery is not a cap, and SELECT DISTINCT / WITH must not get 'SELECT TOP n DISTINCT'.
-    if not (tree.args.get("limit") or tree.args.get("fetch")):
+    if tree.args.get("with") and tree.args["with"].args.get("recursive"):
+        raise QueryValidationError("Recursive CTEs are not allowed: they can run without bound.")
+    limit = tree.args.get("limit")
+    if not (limit or tree.args.get("fetch")):
         tree = tree.limit(AUTO_LIMIT)
         rewritten = True
+    elif limit is not None:
+        n = limit.expression
+        if isinstance(n, exp.Literal) and n.is_int and int(n.name) > MAX_LIMIT:
+            tree = tree.limit(MAX_LIMIT)   # the row cap is a cap, not a default
+            rewritten = True
     if rewritten:
         q = tree.sql(dialect=SQLGLOT_DIALECT.get(flavor))
         # sqlglot drops a CTE's column list (WITH t(a, b) AS ...) when it regenerates SQLite; put it back,

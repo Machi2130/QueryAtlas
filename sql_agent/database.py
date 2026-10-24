@@ -8,6 +8,7 @@ import json
 import os
 import re
 import sys
+import time
 from typing import Any, Callable
 
 from sqlalchemy import create_engine, event, text
@@ -128,6 +129,12 @@ def _limit_statement_time(conn, seconds: int) -> Callable[[], None]:
     timeout only stops waiting, the query would keep running on the server. Returns the undo
     for settings that outlive this checkout (pooled MySQL session, pyodbc connection)."""
     dialect, ms = conn.dialect.name, int(seconds * 1000)
+    if dialect == "sqlite":
+        # SQLite has no statement timeout; its progress handler is called every N VM steps and can
+        # abort the statement. Cleared in the undo so pooled connections do not keep the deadline.
+        raw, deadline = conn.connection.dbapi_connection, time.monotonic() + seconds
+        raw.set_progress_handler(lambda: 1 if time.monotonic() > deadline else 0, 10_000)
+        return lambda: raw.set_progress_handler(None, 0)
     if dialect == "postgresql":
         conn.exec_driver_sql(f"SET LOCAL statement_timeout = {ms}")   # ends with the transaction
     elif dialect in ("mysql", "mariadb"):
