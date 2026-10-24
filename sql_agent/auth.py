@@ -84,10 +84,9 @@ def verify_token(token: str) -> str:
             raise ValueError("Session expired or invalid. Please sign in again.")
         return who
     if token.startswith("mcp_"):
-        who = policy.user_for_mcp_token(token)
-        if not who:
-            raise ValueError("MCP token revoked or invalid.")
-        return who
+        # An MCP token is for the MCP server only (it checks it itself). Accepting it here would make a
+        # 30-day AI-client token a web session that can mint fresh tokens and never effectively expires.
+        raise ValueError("MCP tokens cannot be used for the web app. Sign in with your account.")
     # Never allow raw username impersonation of a password-protected account
     if policy.has_account(token):
         raise ValueError("Password sign-in is required for this account.")

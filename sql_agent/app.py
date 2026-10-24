@@ -431,7 +431,8 @@ def _require(user_id: str, permission: str) -> None:
             "message": f"Your role ({POLICY.role_of(user_id)}) does not allow this.", "permission": permission})
 
 
-_TECHNICAL = ("query", "generated_sql", "sql", "tables_used", "error", "review")
+_TECHNICAL = ("query", "generated_sql", "sql", "tables_used", "error", "review",
+              "token")   # the query as it streams in: SQL text, so also only with view.sql
 
 
 def _for_viewer(user_id: str, data: dict) -> dict:
@@ -1062,7 +1063,13 @@ async def query_stream(
                         stream=True,
                     )
                 stream = await run_in_thread(_stream)
-                for chunk in stream:
+                # Each chunk is a blocking network read: taken on a worker thread, so a slow or
+                # rate-limited provider stalls this request only, not every user on the event loop.
+                it = iter(stream)
+                while True:
+                    chunk = await run_in_thread(next, it, None)
+                    if chunk is None:
+                        break
                     token = chunk.choices[0].delta.content or ""
                     if token:
                         generated_query += token

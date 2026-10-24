@@ -35,8 +35,33 @@ _BLOCKED_KW = re.compile(
 _BLOCKED_FN = re.compile(
     r"\b(pg_read_file|pg_read_binary_file|pg_ls_dir|pg_stat_file|pg_sleep\w*|lo_import|lo_export|dblink\w*|"
     r"nextval|setval|set_config|pg_terminate_backend|pg_cancel_backend|pg_reload_conf|"
-    r"load_file|sleep|benchmark|get_lock|load_extension|readfile|writefile)\s*\(", re.IGNORECASE
+    r"load_file|sleep|benchmark|get_lock|load_extension|readfile|writefile|"
+    r"query_to_xml\w*|table_to_xml\w*|schema_to_xml\w*|database_to_xml\w*|cursor_to_xml\w*|"
+    r"row_to_json|to_json|to_jsonb|json_agg|jsonb_agg|json_object_agg|jsonb_object_agg|"
+    r"xmlforest|xmlagg|hstore|for_json|json_object|json_arrayagg|json_objectagg)\s*\(", re.IGNORECASE
 )
+_COMMENT = re.compile(r"/\*.*?\*/|--[^\n]*|#[^\n]*", re.DOTALL)   # /*!50000 ... */ is live SQL on MySQL
+
+
+def strip_comments(sql: str) -> str:
+    """Comments removed, outside string literals. Refuses a comment that MySQL would execute
+    (/*! ... */): a UNION hidden there would run while every scanner skipped it."""
+    out, i, n = [], 0, len(sql)
+    while i < n:
+        ch = sql[i]
+        if ch == "'":
+            m = _STRING_LITERAL.match(sql, i)
+            if m:
+                out.append(m.group(0)); i = m.end(); continue
+        m = _COMMENT.match(sql, i)
+        if m:
+            if m.group(0).startswith("/*!"):
+                raise QueryValidationError("MySQL conditional comments (/*! ... */) are not allowed.")
+            out.append(" "); i = m.end(); continue
+        out.append(ch); i += 1
+    return "".join(out)
+
+
 # String literals are data, not statements: blanked before the keyword scan so
 # WHERE status = 'delete' is not mistaken for a DELETE.
 _STRING_LITERAL = re.compile(r"'(?:[^']|'')*'")
@@ -145,7 +170,7 @@ def _check_sensitive(tree: exp.Expression, schema_dict: dict) -> None:
 
 
 def validate_sql(query: str, schema_dict: dict, flavor: str, question: str) -> str:
-    q = query.strip()
+    q = strip_comments(query).strip()
     blanked = _STRING_LITERAL.sub("''", q)
     # One statement: a ';' outside a standard '...' literal is refused even where the parser
     # would see one statement, in case a driver reads quotes differently (backslash escapes).
@@ -164,7 +189,11 @@ def validate_sql(query: str, schema_dict: dict, flavor: str, question: str) -> s
     # Every table reference at any depth (comma joins, subqueries, CTE bodies) must be a
     # real table or a CTE defined in this statement. Only the default schema may be named:
     # otherdb.orders / OtherDB.dbo.Orders would read outside the learned database.
-    known = {t.lower() for t in schema_dict} | {c.alias.lower() for c in tree.find_all(exp.CTE)}
+    cte_names = {c.alias.lower() for c in tree.find_all(exp.CTE)}
+    shadow = cte_names & {t.lower() for t in schema_dict}
+    if shadow:
+        raise QueryValidationError(f"A CTE may not use a table's name ({', '.join(sorted(shadow))}); rename it.")
+    known = {t.lower() for t in schema_dict} | cte_names
     for tbl in tree.find_all(exp.Table):
         if tbl.catalog or tbl.db.lower() not in _DEFAULT_SCHEMAS:
             raise QueryValidationError(f"Use bare table names: '{tbl.sql()}' points outside this database's default schema.")
@@ -181,6 +210,13 @@ def validate_sql(query: str, schema_dict: dict, flavor: str, question: str) -> s
         rewritten = True
     if rewritten:
         q = tree.sql(dialect=SQLGLOT_DIALECT.get(flavor))
+        # sqlglot drops a CTE's column list (WITH t(a, b) AS ...) when it regenerates SQLite; put it back,
+        # or the query fails with 'no such column a'.
+        for cte in tree.find_all(exp.CTE):
+            cols = cte.args.get("alias").args.get("columns") if cte.args.get("alias") else None
+            if cols and f"{cte.alias}(" not in q.split(" AS ")[0]:
+                q = q.replace(f"WITH {cte.alias} AS", f"WITH {cte.alias}({', '.join(c.name for c in cols)}) AS", 1)
+                q = q.replace(f", {cte.alias} AS", f", {cte.alias}({', '.join(c.name for c in cols)}) AS", 1)
     return q.rstrip(";").strip()
 
 WRITE_LIMIT = 10_000   # longer statements are refused: the confirmation form must show the whole thing

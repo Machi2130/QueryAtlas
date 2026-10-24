@@ -6,6 +6,7 @@ import datetime
 import decimal
 import json
 import os
+import re
 import sys
 from typing import Any, Callable
 
@@ -274,6 +275,8 @@ def sqlserver_connection_url(host: str, port: str | int, username: str, password
     def odbc_value(value: str | int) -> str:   # in {} with '}' doubled: a ';' or '}' cannot end the attribute
         return "{" + str(value).replace("}", "}}") + "}"
 
+    if not re.fullmatch(r"\d{1,5}", str(port)):   # it goes into an ODBC string: ';Encrypt=no' must not ride along
+        raise ValueError("Port must be a number.")
     driver = "{" + sqlserver_odbc_driver().replace("}", "}}") + "}"
     connection = (
         f"DRIVER={driver};SERVER={host},{port};DATABASE={odbc_value(database)};"
@@ -311,7 +314,10 @@ def open_handle(db_type: str, *, host: str = "", port: str = "", username: str =
     import certifi
     p = port or _DEFAULT_PORTS.get(db_type, "")
     if db_type == "SQLite":
-        engine = _make_engine(f"sqlite:///{db_path}")
+        if any(ch in str(db_path) for ch in "?#"):
+            raise ValueError("SQLite path contains characters that are not allowed.")
+        # The resolved path, so what is opened is exactly what check_target examined.
+        engine = _make_engine(URL.create("sqlite", database=os.path.realpath(db_path) if db_path else db_path))
         _explicit_sqlite_transactions(engine)
     elif db_type == "SQL Server":
         engine = _make_engine(sqlserver_connection_url(host, p, username, password, database,

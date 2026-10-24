@@ -60,8 +60,12 @@ def validate(query: str, schema_dict: dict) -> str:
     blanked = _blank(q)
     if ";" in blanked:
         raise QueryValidationError("One statement per call (no ';').")
+    if re.search(r"--|/\*|//", blanked):   # a comment would swallow the tenant filter added after it
+        raise QueryValidationError("Comments are not allowed in a query.")
     if not re.match(r"\s*SELECT\b", blanked, re.IGNORECASE):
         raise QueryValidationError("Query must be a SELECT.")
+    if re.match(r"\s*SELECT\s+(DISTINCT\s+)?JSON\b", blanked, re.IGNORECASE):
+        raise QueryValidationError("SELECT JSON is not allowed: name the columns.")
     m = _BLOCKED_KW.search(blanked)
     if m:
         raise QueryValidationError(f"Blocked keyword '{m.group(0).upper()}' detected.")

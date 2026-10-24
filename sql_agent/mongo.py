@@ -195,7 +195,19 @@ def apply_scope(query: dict, scope: dict | None) -> tuple[dict, list[str]]:
     if not scope:
         return query, []
     scoped = {t.lower() for t in scope["tables"]}
-    joined = [c for c in collections_in(query)[1:] if c.lower() in scoped]
+    def walk(pipeline, found):   # collections read by $lookup / $unionWith at any depth, the main one included
+        for stage in pipeline or []:
+            name, body = next(iter(stage.items()))
+            if name == "$lookup":
+                found.append(body["from"]); walk(body.get("pipeline"), found)
+            elif name == "$unionWith":
+                found.append(body if isinstance(body, str) else body["coll"])
+                walk(body.get("pipeline") if isinstance(body, dict) else None, found)
+            elif name == "$facet":
+                for sub in body.values():
+                    walk(sub, found)
+        return found
+    joined = sorted({c for c in walk(query.get("pipeline"), []) if c.lower() in scoped})
     if joined:
         raise QueryValidationError(f"Reading {', '.join(joined)} through $lookup/$unionWith is not allowed "
                                    f"while the tenant filter {scope['column']} is active; query it directly.")

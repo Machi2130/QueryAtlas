@@ -13,7 +13,6 @@ server before touching any engine, cache, knowledge graph, or LLM.
 
 from __future__ import annotations
 
-import base64
 import dataclasses
 import hashlib
 import hmac
@@ -21,87 +20,53 @@ import ipaddress
 import json
 import os
 import re
+import secrets
 import socket
 import threading
 import time
-import uuid
 from dataclasses import dataclass, field
 from typing import Callable
 
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
-# ── Code-level RSA-2048 keypair (in RAM only; never serialized or exposed) ──
-_RSA_PRIVATE_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-_RSA_PUBLIC_KEY  = _RSA_PRIVATE_KEY.public_key()
-_ACTIVE_JTIS: dict[str, tuple[str, str]] = {}   # jti -> (user_id, conn_key)
-_JTI_LOCK = threading.Lock()
-
-
-def _oaep() -> padding.OAEP:
-    return padding.OAEP(
-        mgf=padding.MGF1(algorithm=hashes.SHA256()),
-        algorithm=hashes.SHA256(),
-        label=None,
-    )
+# ── Connection tokens: opaque random ids, valid only while the server remembers them ──
+# A token proves nothing by itself: the server's ledger maps it to (user, connection key), so it
+# cannot be forged, replayed after revocation, or used by another user. (An earlier design encrypted
+# the payload with RSA-OAEP, which cannot hold more than 190 bytes: hosted session ids broke it.)
+_ACTIVE_TOKENS: dict[str, tuple[str, str]] = {}   # secret -> (user_id, conn_key)
+_TOKEN_LOCK = threading.Lock()
 
 
 def issue_rsa_token(user_id: str, conn_key: str) -> str:
-    """Issue a unique RSA-2048 OAEP encrypted token bound to (user_id, conn_key)."""
-    jti = uuid.uuid4().hex
-    payload = json.dumps(
-        {"u": user_id, "c": conn_key, "j": jti, "t": int(time.time())},
-        separators=(",", ":"),
-    ).encode("utf-8")
-    ciphertext = _RSA_PUBLIC_KEY.encrypt(payload, _oaep())
-    with _JTI_LOCK:
-        _ACTIVE_JTIS[jti] = (user_id, conn_key)
-    return "r1." + base64.urlsafe_b64encode(ciphertext).decode("ascii").rstrip("=")
+    """Issue a unique connection token bound to (user_id, conn_key)."""
+    secret = secrets.token_urlsafe(32)
+    with _TOKEN_LOCK:
+        _ACTIVE_TOKENS[secret] = (user_id, conn_key)
+    return "r1." + secret
 
 
 def verify_rsa_token(token: str, expected_user: str, expected_conn: str = "") -> str:
-    """Decrypt and validate an RSA token against the server's in-memory key and ledger.
-    Returns the decrypted connection key (cid) if valid; raises PermissionError otherwise."""
+    """Validate a connection token against the ledger. Returns its connection key, or raises
+    PermissionError. Comparison is constant-time so a token cannot be guessed byte by byte."""
     if not token or not isinstance(token, str) or not token.startswith("r1."):
-        raise PermissionError("Missing or invalid RSA connection token.")
-    body = token[3:]
-    pad = "=" * (-len(body) % 4)
-    try:
-        ciphertext = base64.urlsafe_b64decode((body + pad).encode("ascii"))
-        raw = _RSA_PRIVATE_KEY.decrypt(ciphertext, _oaep())
-        data = json.loads(raw.decode("utf-8"))
-    except Exception as exc:
-        raise PermissionError("Invalid or forged RSA connection token.") from exc
-
-    uid = data.get("u", "")
-    cid = data.get("c", "")
-    jti = data.get("j", "")
-    with _JTI_LOCK:
-        active = _ACTIVE_JTIS.get(jti)
-    if active is None or active != (uid, cid):
-        raise PermissionError("RSA connection token has been revoked or expired.")
+        raise PermissionError("Missing or invalid connection token.")
+    secret = token[3:]
+    with _TOKEN_LOCK:
+        match = next((v for k, v in _ACTIVE_TOKENS.items() if hmac.compare_digest(k, secret)), None)
+    if match is None:
+        raise PermissionError("Connection token has been revoked or expired.")
+    uid, cid = match
     if uid != expected_user:
-        raise PermissionError("RSA connection token belongs to a different user.")
+        raise PermissionError("Connection token belongs to a different user.")
     if expected_conn and cid != expected_conn:
-        raise PermissionError("RSA connection token does not match the target database.")
+        raise PermissionError("Connection token does not match the target database.")
     return cid
 
 
 def revoke_rsa_token(token: str) -> None:
-    """Revoke an RSA token's jti on disconnect so it can never be replayed."""
-    if not token or not token.startswith("r1."):
-        return
-    body = token[3:]
-    pad = "=" * (-len(body) % 4)
-    try:
-        ciphertext = base64.urlsafe_b64decode((body + pad).encode("ascii"))
-        data = json.loads(_RSA_PRIVATE_KEY.decrypt(ciphertext, _oaep()).decode("utf-8"))
-        jti = data.get("j", "")
-        if jti:
-            with _JTI_LOCK:
-                _ACTIVE_JTIS.pop(jti, None)
-    except Exception:
-        pass
+    """Forget a token on disconnect so it can never be replayed."""
+    if token and token.startswith("r1."):
+        with _TOKEN_LOCK:
+            _ACTIVE_TOKENS.pop(token[3:], None)
 
 
 @dataclass(frozen=True)
@@ -131,7 +96,8 @@ def _not_public(address: str) -> bool:
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
         ip = ip.ipv4_mapped
     return (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
-            or ip.is_multicast or ip.is_unspecified)
+            or ip.is_multicast or ip.is_unspecified
+            or (isinstance(ip, ipaddress.IPv4Address) and ip in ipaddress.ip_network("100.64.0.0/10")))
 
 
 MONGO_SRV = "mongodb+srv://"
@@ -172,6 +138,8 @@ def check_target(db_type: str, host: str, db_path: str, hosted: bool) -> str:
         root = os.getenv("MCP_SQLITE_DIR", "")
         if hosted and not root:
             raise TargetRefused("SQLite files are not available on this server.")
+        if any(ch in str(db_path or "") for ch in "?#"):   # a URL parser would cut the path at these
+            raise TargetRefused("SQLite path contains characters that are not allowed.")
         if root:
             path, base = os.path.realpath(db_path or ""), os.path.realpath(root)
             try:
