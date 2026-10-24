@@ -182,19 +182,23 @@ def build_concept_map(schema_dict: dict) -> dict:
     return concepts
 
 
-_concept_cache: dict | None = None
+# Keyed by the schema's full (table, columns) signature: several users/databases can be open
+# at once, and two schemas that share table names (e.g. 'orders') may have different columns.
+_concept_cache: dict[tuple, dict] = {}
+_CONCEPT_CACHE_MAX = 64
 
 
 def get_concept_map(schema_dict: dict) -> dict:
-    global _concept_cache
-    if _concept_cache is None:
-        _concept_cache = build_concept_map(schema_dict)
-    return _concept_cache
+    key = tuple((t, tuple(cols)) for t, cols in sorted(schema_dict.items()))
+    if key not in _concept_cache:
+        if len(_concept_cache) >= _CONCEPT_CACHE_MAX:
+            _concept_cache.pop(next(iter(_concept_cache)))
+        _concept_cache[key] = build_concept_map(schema_dict)
+    return _concept_cache[key]
 
 
 def reset_concept_cache():
-    global _concept_cache
-    _concept_cache = None
+    _concept_cache.clear()
 
 
 def map_concepts(question: str, schema_dict: dict) -> dict:
@@ -282,45 +286,3 @@ def build_query_plan(question: str, schema_dict: dict, kg_joins: list = None, fl
         "top_n": top_n or 50,
         "question": question,
     }
-
-
-def plan_to_prompt(plan: dict, flavor: str) -> str:
-    """
-    Convert a query plan to a minimal LLM prompt.
-    ~300-500 tokens instead of ~5000.
-    """
-    lines = []
-    lines.append(f"Generate a {flavor} SELECT query.")
-
-    if plan["intents"]:
-        lines.append(f"Intent: {', '.join(plan['intents'])}")
-
-    lines.append(f"Top N: {plan['top_n']}")
-
-    if plan["time_range"]:
-        lines.append(f"Time filter: >= {plan['time_range']}")
-
-    lines.append("")
-    lines.append("Tables and columns (use ONLY these exact names):")
-    for tbl, info in plan["tables"].items():
-        col_str = ", ".join(info["columns"][:15])
-        meta = []
-        if info.get("value_column"):
-            meta.append(f"value={info['value_column']}")
-        if info.get("date_column"):
-            meta.append(f"date={info['date_column']}")
-        meta_str = f" [{', '.join(meta)}]" if meta else ""
-        lines.append(f"  {tbl}: {col_str}{meta_str}")
-
-    if plan["joins"]:
-        lines.append("")
-        lines.append("Joins:")
-        for j in plan["joins"]:
-            lines.append(f"  {j['from']} = {j['to']}")
-
-    lines.append("")
-    if flavor == "SQL Server":
-        lines.append("Use T-SQL: SELECT TOP N, square brackets for identifiers.")
-    lines.append("Return ONLY raw SQL. No markdown. No explanation.")
-
-    return "\n".join(lines)

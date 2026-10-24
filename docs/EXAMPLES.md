@@ -35,9 +35,9 @@ note's words steer table selection, and real foreign keys supply the joins.
 ```
 run_sql("SELECT SUM(amount) FROM transactions")            -> 1099   (two tenants mixed)
 set_scope(column="Tenant_Id", value="7", label="Acme Retail")
-run_sql("SELECT SUM(amount) FROM transactions")            -> REJECTED:
-   "transactions must be filtered by Tenant_Id = '7' (Acme Retail). Add it to the WHERE clause…"
-run_sql("SELECT SUM(amount) FROM transactions WHERE Tenant_Id = 7") -> 100
+run_sql("SELECT SUM(amount) FROM transactions")            -> 100
+   warnings: ["Tenant filter Tenant_Id = '7' applied to: transactions."]
+run_sql("SELECT SUM(amount) FROM transactions WHERE Tenant_Id <> 7") -> NULL (still only tenant 7's rows)
 run_sql("SELECT key, value FROM system_parameters")        -> fine (no tenant column)
 ```
 

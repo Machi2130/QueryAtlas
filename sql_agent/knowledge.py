@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 from typing import Any
 
 import chromadb
@@ -59,6 +60,21 @@ class RAGStore:
             metadatas=[{"table": table_name}],
         )
 
+    def add_ddl_many(self, items: list[tuple[str, str]], batch: int = 64) -> int:
+        """Index many tables with one embedding call per batch. One call per table reloaded the
+        embedding model every time: 154 s for 523 tables. Returns how many tables were indexed."""
+        done = 0
+        for i in range(0, len(items), batch):
+            chunk = items[i:i + batch]
+            try:
+                self._ddl.upsert(ids=[self._hash_id(f"ddl:{t}") for t, _ in chunk],
+                                 documents=[d for _, d in chunk],
+                                 metadatas=[{"table": t} for t, _ in chunk])
+                done += len(chunk)
+            except Exception as e:   # the rest of the schema is still indexed; say which part was not
+                print(f"[knowledge] could not index {len(chunk)} tables ({chunk[0][0]} ...): {e}", file=sys.stderr)
+        return done
+
     def add_documentation(self, doc: str) -> None:
         doc_id = self._hash_id(f"doc:{doc[:100]}")
         self._docs.upsert(
@@ -66,13 +82,35 @@ class RAGStore:
             documents=[doc],
         )
 
-    def add_query_pair(self, question: str, sql: str) -> None:
+    def add_query_pair(self, question: str, sql: str, verified: bool = False) -> None:
+        """verified = a human confirmed this SQL answers the question (or the team wrote it).
+        An unverified run never overwrites a verified example for the same question."""
         doc_id = self._hash_id(f"q:{question[:100]}")
+        if not verified:
+            existing = self._queries.get(ids=[doc_id])["metadatas"]
+            if existing and existing[0].get("verified"):
+                return
         self._queries.upsert(
             ids=[doc_id],
             documents=[question],
-            metadatas=[{"sql": sql}],
+            metadatas=[{"sql": sql, "verified": verified}],
         )
+
+    def delete_query_pair(self, question: str) -> bool:
+        doc_id = self._hash_id(f"q:{question[:100]}")
+        if not self._queries.get(ids=[doc_id])["ids"]:
+            return False
+        self._queries.delete(ids=[doc_id])
+        return True
+
+    def verified_query_pairs(self) -> list[dict]:
+        got = self._queries.get(where={"verified": True})
+        return [{"question": d, "sql": m.get("sql", "")} for d, m in zip(got["documents"], got["metadatas"])]
+
+    def ddl_for(self, tables: list[str]) -> list[str]:
+        if not tables:
+            return []
+        return self._ddl.get(ids=[self._hash_id(f"ddl:{t}") for t in tables])["documents"]
 
     def search_ddl(self, question: str, n_results: int = 5) -> list[str]:
         if self._ddl.count() == 0:
@@ -102,7 +140,8 @@ class RAGStore:
         pairs = []
         if results["documents"] and results["metadatas"]:
             for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
-                pairs.append({"question": doc, "sql": meta.get("sql", "")})
+                pairs.append({"question": doc, "sql": meta.get("sql", ""),
+                              "verified": bool(meta.get("verified"))})
         return pairs
 
     def stats(self) -> dict:
@@ -134,6 +173,25 @@ class KnowledgeEngine:
 
     def set_groq_client(self, client) -> None:
         pass
+
+    @property
+    def folder(self) -> str:
+        """This database's knowledge folder: embeddings, notes, profile."""
+        return os.path.join(self._persist_dir, self.user_id)
+
+    def notes(self) -> list[dict]:
+        """Glossary notes for this database (written by the MCP add_note tool)."""
+        try:
+            with open(os.path.join(self.folder, "notes.json"), encoding="utf-8") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return []
+
+    def verified_sql(self, question: str) -> str | None:
+        """SQL a human confirmed for exactly this question: reuse it, no LLM call."""
+        got = self.rag._queries.get(ids=[self.rag._hash_id(f"q:{question[:100]}")])
+        meta = got["metadatas"][0] if got["metadatas"] else {}
+        return meta.get("sql") if meta.get("verified") else None
 
     def _sia_cache_path(self, db_name: str) -> str:
         # db_name may be a SQLite file path (C:/x/y.sqlite): use its basename, filename-safe.
@@ -179,39 +237,21 @@ class KnowledgeEngine:
                 self.graph.add_node(col_id, node_type="column", data_type=col_type)
                 self.graph.add_edge(table, col_id, relation="has_column")
 
-        all_tables = list(schema_dict.keys())
-        for table, columns in schema_dict.items():
-            for col_def in columns:
-                col_name = col_def.split(" ")[0].lower()
-                if col_name.endswith("_id") and col_name != "id":
-                    prefix = col_name[:-3]
-                    for other_table in all_tables:
-                        if other_table == table:
-                            continue
-                        other_lower = other_table.lower().replace("_", "")
-                        if prefix in other_lower or other_lower in prefix:
-                            other_cols = [
-                                c.split(" ")[0].lower()
-                                for c in schema_dict[other_table]
-                            ]
-                            target = (
-                                "id" if "id" in other_cols
-                                else col_name if col_name in other_cols
-                                else None
-                            )
-                            if target:
-                                self.graph.add_edge(
-                                    f"{table}.{col_name}",
-                                    f"{other_table}.{target}",
-                                    relation="foreign_key",
-                                )
-                                self.graph.add_edge(
-                                    table,
-                                    other_table,
-                                    relation="joins_to",
-                                    via_from=col_name,
-                                    via_to=target,
-                                )
+        from .profile.inference import infer_joins   # one inference for the whole app
+        for j in infer_joins(schema_dict):
+            self.graph.add_edge(j["from"], j["to"], relation="foreign_key")
+            (ft, fc), (tt, tc) = j["from"].split(".", 1), j["to"].split(".", 1)
+            self.graph.add_edge(ft, tt, relation="joins_to", via_from=fc, via_to=tc)
+            self.graph.add_edge(tt, ft, relation="joins_to", via_from=tc, via_to=fc)
+
+    def set_relationships(self, relationships: list) -> None:
+        """Replace name-guessed graph edges with the profile's data-confirmed relationships."""
+        drop = [(u, v) for u, v, d in self.graph.edges(data=True) if d.get("relation") in ("foreign_key", "joins_to")]
+        self.graph.remove_edges_from(drop)
+        for r in relationships:
+            self.graph.add_edge(f"{r.from_table}.{r.from_column}", f"{r.to_table}.{r.to_column}", relation="foreign_key")
+            self.graph.add_edge(r.from_table, r.to_table, relation="joins_to", via_from=r.from_column, via_to=r.to_column)
+            self.graph.add_edge(r.to_table, r.from_table, relation="joins_to", via_from=r.to_column, via_to=r.from_column)
 
     def find_join_path(self, table_a: str, table_b: str) -> list[dict] | None:
         table_nodes = [
@@ -268,12 +308,12 @@ class KnowledgeEngine:
     #  RAG — train on schema and context
     # ═══════════════════════════════════════════════════════
 
-    def learn_schema(self, schema_dict: dict, db_flavor: str) -> dict:
+    def learn_schema(self, schema_dict: dict, db_flavor: str, refresh: bool = False) -> dict:
         self._schema_dict = schema_dict
         self._build_graph(schema_dict)
 
         existing = self.rag.stats()
-        if existing["ddl_count"] >= len(schema_dict):
+        if existing["ddl_count"] >= len(schema_dict) and not refresh:
             return {
                 "tables_trained": existing["ddl_count"],
                 "graph_nodes": self.graph.number_of_nodes(),
@@ -281,14 +321,8 @@ class KnowledgeEngine:
                 "from_cache": True,
             }
 
-        trained_tables = 0
-        for table, columns in schema_dict.items():
-            ddl = self._schema_to_ddl(table, columns, db_flavor)
-            try:
-                self.rag.add_ddl(table, ddl)
-                trained_tables += 1
-            except Exception:
-                pass
+        trained_tables = self.rag.add_ddl_many(
+            [(table, self._schema_to_ddl(table, columns, db_flavor)) for table, columns in schema_dict.items()])
 
         return {
             "tables_trained": trained_tables,
@@ -330,17 +364,22 @@ class KnowledgeEngine:
             )
             self.rag.add_documentation(doc)
 
-    def learn_successful_query(self, question: str, sql: str) -> None:
+    def learn_successful_query(self, question: str, sql: str, verified: bool = False) -> None:
         try:
-            self.rag.add_query_pair(question, sql)
-        except Exception:
-            pass
+            self.rag.add_query_pair(question, sql, verified=verified)
+        except Exception as e:
+            import sys
+            print(f"[knowledge] add_query_pair failed: {e}", file=sys.stderr)
 
     def learn_user_feedback(self, question: str, sql: str, is_correct: bool, correction: str | None = None) -> None:
+        """A human judged the answer: right -> verified example; wrong -> the bad pair is
+        dropped so it is never retrieved again, and the correction (if any) is verified."""
         if is_correct:
-            self.learn_successful_query(question, sql)
-        elif correction:
-            self.learn_successful_query(question, correction)
+            self.learn_successful_query(question, sql, verified=True)
+            return
+        self.rag.delete_query_pair(question)
+        if correction:
+            self.learn_successful_query(question, correction, verified=True)
 
     # ═══════════════════════════════════════════════════════
     #  QUERY — get full context for a question

@@ -8,8 +8,8 @@ flowchart TD
     Q[SQL from the model] --> R{run_sql or execute_write?}
     R -->|run_sql| V1{SELECT/WITH only?<br/>no blocked keywords?<br/>one statement?<br/>no SELECT INTO?}
     V1 -->|no| X1[rejected]
-    V1 -->|yes| V2{tenant scope set and<br/>filter missing?}
-    V2 -->|yes| X2[rejected with the exact WHERE to add]
+    V1 -->|yes| V2{tenant scope set?}
+    V2 -->|yes| X2[rewrite every scoped table to<br/>a subquery filtered by the tenant value] --> E1
     V2 -->|no| E1[execute, fetch ≤ MAX_ROWS] --> A[audit line] --> OK1[rows]
     R -->|execute_write| W1{server allows writes?<br/>connection opened with allow_writes?}
     W1 -->|no| X3[rejected]
@@ -31,13 +31,17 @@ Server in the README. Never run the server under a sysadmin or database-owner ac
 
 Applies to `run_sql` and the Groq path:
 
-- statement must start with `SELECT` or `WITH`; CTE names are recognised as valid tables;
-- blocked keywords anywhere: `INSERT UPDATE DELETE MERGE DROP ALTER CREATE TRUNCATE EXEC
-  EXECUTE GRANT REVOKE DENY xp_* sp_* OPENROWSET OPENQUERY OPENDATASOURCE BULK DBCC
-  BACKUP RESTORE SHUTDOWN RECONFIGURE WAITFOR`;
+- parsed with sqlglot in the connection's dialect; unparseable SQL is rejected;
+- exactly one statement, and it must be a SELECT or a UNION/INTERSECT/EXCEPT of SELECTs
+  (WITH allowed); no INSERT/UPDATE/DELETE/MERGE/DDL/GRANT node anywhere in the tree,
+  including inside a CTE;
 - `SELECT … INTO` is rejected (it creates a table);
-- one statement per call (`;` rejected);
-- table names must exist in the learned schema; sensitive column names are blocked;
+- every table reference at any depth (comma joins, subqueries, CTE bodies) must be in the
+  learned schema or a CTE of the same statement; columns named like secrets (`password`,
+  `token`, `hash`…) are blocked as columns, not as words in string literals;
+- second line: blocked keywords outside string literals: `INSERT UPDATE DELETE MERGE DROP
+  ALTER CREATE TRUNCATE EXEC EXECUTE GRANT REVOKE DENY xp_* sp_* OPENROWSET OPENQUERY
+  OPENDATASOURCE BULK DBCC BACKUP RESTORE SHUTDOWN RECONFIGURE WAITFOR`;
 - the user's question wording never licenses a write (an earlier version allowed a keyword
   if the question mentioned it — removed).
 
@@ -50,23 +54,70 @@ a `SELECT *` on a 50-million-row table cannot exhaust the server's memory.
 
 Many databases hold several clients in the same tables (`Tenant_Id`, `Client_Id`…). The
 server detects such columns and, once `set_scope(column, value)` is called for a
-connection, rejects any query on a scoped table that does not filter on that column — with
-the exact clause to add. Clearing the scope is explicit. Mixing clients by accident is
-the most expensive wrong answer this tool could give; it is blocked, not warned.
+connection, **enforces** it: every reference to a scoped table, at any depth, is rewritten
+to `(SELECT * FROM t WHERE "col" = 'value')` under the same alias before the query runs.
+The model's own WHERE clause is irrelevant — `WHERE Tenant_Id <> 7`, `OR 1=1`, a subquery,
+a CTE or a UNION all still see only that client's rows. The value is emitted as an escaped
+string literal per dialect (MySQL backslashes included), so a crafted scope value cannot
+inject SQL. A CTE that shadows a scoped table's name fails closed (the database rejects the
+rewritten query) rather than leaking. Changing the scope clears cached answers. Clearing
+the scope is explicit. Mixing clients by accident is the most expensive wrong answer this
+tool could give; it is prevented, not warned. Tests: `tests/test_mcp_run_sql.py`
+(`test_scope_*`).
+
+**Who decides the tenant.** `set_scope` is called by the model, so on a shared instance
+pin each person instead: `SCOPE_PINS=alice:Tenant_Id=7` (identity = bearer-token name over
+HTTP, or the web app's user id). A pinned scope is applied on connect and `set_scope` cannot
+change or clear it. Over stdio the identity is `MCP_USER_ID`, which the user sets
+themselves, so pins only bind hosted (HTTP) and web users.
+
+**Roles and access (both web app and MCP).** Who may do what is a settings file
+(`config/rbac.json`, edited from the admin Settings page), not code. The code checks named
+permissions (`ask`, `view.sql`, `connect`, `sql.write`, `settings.manage`, ...); the file maps
+roles to permissions and people to roles, re-read on every change. Enforcement is
+server-side: answers to roles without `view.sql` carry no SQL, tables used or technical
+errors (cached answers included); endpoints and MCP tools without the permission return
+403 / AUTH_FAILED and are audited. Without `feedback.approve` a 👍 is only a suggestion.
+`RBAC_ADMINS` in `.env` always has a settings-managing role, and a settings change that
+would leave no role with `settings.manage` is refused.
+
+**Idle lock in MCP too.** The same `idle_lock_minutes` applies to MCP connections opened
+with a password: the next tool call shows a password form and verifies it by a real
+login. Note: the MCP spec says servers should not ask for sensitive data through
+elicitation forms; connect_database already did, and the lock follows the same pattern.
+
+**Several databases, one session (web app).** Each open database is its own connection
+(own engine, knowledge folder, cache, chat history); a conversation stays on the database
+that answered its first question. A database opened with a password and unused for
+`IDLE_LOCK_MINUTES` (default 30) refuses questions with HTTP 423 until the password is
+re-entered. The re-entered password is checked by a real login with the saved connection
+details; passwords are never stored, and only host / user / database name are kept so a
+conversation can reconnect. Unlock attempts share the user's rate limit.
+
+**Every execution path** goes through the same `validate_sql` + `apply_scope` gate: MCP
+`run_sql`, `query_database` (including its auto-fix retry), `explain_query`, and the web
+app's `/api/query`, `/api/query/stream`, `/api/hybrid` and `/api/query/explain`
+(`EXPLAIN ANALYZE` executes the statement on PostgreSQL, so explain is validated too).
+The web app also caps rows at `MAX_ROWS`. Tests: `tests/test_web_app.py`.
 
 ## 5. Developer writes (`execute_write`)
 
 Three independent gates, all required:
 
-1. server flag `MCP_ALLOW_WRITES=true` (keep it off on shared/analyst instances);
+1. an admin enables data writes in **Settings → Database writes**, and the user's role
+   includes `sql.write`;
 2. the connection was opened with `allow_writes=true` using the developer's own
    write-capable credentials;
 3. a human types **YES** in a confirmation form showing the exact statement and database —
    the model cannot approve it, and a client without forms cannot write at all.
 
-Plus: `UPDATE`/`DELETE` without `WHERE` are rejected; DDL needs `MCP_ALLOW_DDL=true`;
-`dry_run=true` runs in a transaction and rolls back; the query cache is cleared after a
-write.
+`MCP_ALLOW_WRITES` and `MCP_ALLOW_DDL` are first-run defaults; admins manage the live values
+in Settings without editing environment files or restarting. DDL has a separate Settings
+toggle and should remain off unless explicitly required. Role and server-setting changes
+are enforced on subsequent requests, rechecked after confirmation and before commit, and
+connected MCP clients are notified to refresh their tool lists. `UPDATE`/`DELETE` without
+`WHERE` are rejected; `dry_run=true` runs in a transaction and rolls back; the query cache
+is cleared after a write.
 
 ## 6. Audit
 

@@ -6,3 +6,15 @@ __pycache__/
 .pytest_cache/
 .code-review-graph/
 face_landmarker.task
+# local state and secrets: roles, account hashes, MCP tokens, the audit trail, test databases
+config/rbac.json
+audit.log
+*.db
+# local-only web UI / worker pieces (gitignored, not part of the server image)
+index.html
+static/
+celery_app.py
+tasks.py
+sql.py
+supabase_schema.sql
+README_pbiviz.md
