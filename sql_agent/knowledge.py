@@ -50,7 +50,7 @@ class RAGStore:
 
     @staticmethod
     def _hash_id(text: str) -> str:
-        return hashlib.sha256(text.encode()).hexdigest()[:16]
+        return hashlib.sha256(text.encode()).hexdigest()   # full digest: no two questions share an id
 
     def add_ddl(self, table_name: str, ddl: str) -> None:
         doc_id = self._hash_id(f"ddl:{table_name}")

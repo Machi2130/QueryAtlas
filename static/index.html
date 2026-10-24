@@ -304,7 +304,11 @@ async function j(path, opts) {
 /* Server-sent events over fetch: handles chunk boundaries, calls onEvent per JSON event. */
 async function sse(path, body, onEvent) {
   const r = await api(path, { method: 'POST', json: body });
-  if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d?.detail?.message || d?.detail || `Request failed (${r.status})`); }
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    const err = new Error(d?.detail?.message || d?.detail || `Request failed (${r.status})`);
+    err.status = r.status; err.detail = d?.detail; throw err;   // 423 carries which connection is locked
+  }
   const reader = r.body.getReader(), dec = new TextDecoder();
   let buf = '';
   for (;;) {
@@ -514,7 +518,13 @@ $('#ask').onsubmit = async e => {
       else if (ev.done) { final = ev; }
       else if (ev.phase) { /* connect-style phases are not used on this route */ }
     });
-  } catch (err) { failed = { message: err.message }; }
+  } catch (err) {
+    if (err.status === 423 && err.detail?.locked) {   // idle-locked database: ask for its password, then retry
+      a.previousElementSibling?.remove(); a.remove(); S.busy = false; $('#send').disabled = false;
+      openUnlock(err.detail.locked, q); return;
+    }
+    failed = { message: err.message };
+  }
   text.classList.remove('cursor');
   if (failed) {
     STEPS.forEach(([k]) => setStep(a, k, null));
@@ -545,7 +555,7 @@ function finishAnswer(el, d, question, fromHistory) {
     ${rows.length ? `<div class="grid ${chart ? '' : 'one'}"><div>${table}</div>${chart ? `<div class="chart-slot"></div>` : ''}</div>` : ''}
     <div class="foot">
       ${rows.length ? `<button class="btn sm" data-dl>⤓ CSV</button>` : ''}
-      ${!fromHistory && can('approve') ? `<span class="meta-chip">Was this right?</span><button class="btn sm" data-fb="1">👍</button><button class="btn sm" data-fb="0">👎</button>` : ''}
+      ${!fromHistory && can('feedback') ? `<span class="meta-chip">Was this right?</span><button class="btn sm" data-fb="1">👍</button><button class="btn sm" data-fb="0">👎</button>` : ''}
       ${d.verified ? `<span class="meta-chip" style="color:var(--ok)">✓ verified answer</span>` : ''}
       <span class="sp"></span>
       <span class="lat">${(d.total_rows || rows.length).toLocaleString()} rows${d.total_rows > rows.length ? ` (first ${rows.length} kept)` : ''}${d.latency_ms ? ` · ${d.latency_ms} ms` : ''}</span>
@@ -650,6 +660,24 @@ function openConnect() {
   setTimeout(() => $('input', fields)?.focus(), 50);
 }
 $('#add-db').onclick = () => { openConnect(); document.body.classList.remove('side-open'); };
+
+function openUnlock(locked, question) {
+  const { el, close } = modal('Unlock ' + locked.label, `
+    <p style="color:var(--t2);margin:6px 0 0">This database has not been used for a while. Enter its password to continue; it is checked by logging in and never stored.</p>
+    <form id="uf"><label class="lbl">Password</label>
+      <div class="pw"><input class="in" name="password" id="upw" type="password" autocomplete="current-password" required><button type="button" data-eye="upw" aria-label="Show password">👁</button></div>
+      <div class="err" id="uerr"></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px"><button type="button" class="btn" data-close>Cancel</button><button class="btn primary">Unlock</button></div></form>`);
+  $('#uf', el).onsubmit = async e => {
+    e.preventDefault();
+    try {
+      await j(`/api/connections/${encodeURIComponent(locked.id)}/unlock`, { method: 'POST', json: { password: $('#upw', el).value } });
+      close(); toast('Unlocked');
+      if (question) { qbox.value = question; $('#ask').requestSubmit(); }
+    } catch (err) { $('#uerr', el).textContent = err.message; }
+  };
+  setTimeout(() => $('#upw', el).focus(), 50);
+}
 
 async function openMcp() {
   const { el } = modal('Connect Claude Code', `<p style="color:var(--t2);margin:6px 0 0">A personal token lets Claude Code or Cursor use SQL-Agent as an MCP server, with your access and your audit trail.</p><div id="mcpbody" style="margin-top:12px"><div class="empty">Loading…</div></div>`);

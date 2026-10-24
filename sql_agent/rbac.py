@@ -133,6 +133,15 @@ def _scrypt_digest(password: str, salt: bytes) -> str:
     return dk.hex()
 
 
+def _atomic(method):
+    """The whole read-modify-write of the settings file under the write lock, so a concurrent
+    sign-up cannot restore a token that a revoke just removed."""
+    def wrapper(self, *args, **kwargs):
+        with self._write_lock:
+            return method(self, *args, **kwargs)
+    wrapper.__name__, wrapper.__doc__ = method.__name__, method.__doc__
+    return wrapper
+
 class Policy:
     """The settings file, cached and re-read whenever it changes on disk."""
 
@@ -141,6 +150,7 @@ class Policy:
         self._doc: dict = {}
         self._mtime: tuple[int, int] | None = None
         self._lock = threading.Lock()
+        self._write_lock = threading.RLock()   # one read-modify-write of the file at a time
 
     def _load(self) -> dict:
         try:
@@ -163,15 +173,27 @@ class Policy:
     def save(self, doc: dict) -> None:
         validate_settings(doc)
         os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
-        tmp = self.path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(doc, f, indent=2)
-        os.replace(tmp, self.path)
-        # Two saves can land on the same file timestamp (Windows): never rely on it to
-        # notice our own change.
-        with self._lock:
-            stat = os.stat(self.path)
-            self._doc, self._mtime = copy.deepcopy(doc), (stat.st_mtime_ns, stat.st_size)
+        # The write is inside the lock: two concurrent read-modify-write cycles (a sign-up and a
+        # token revoke) would otherwise interleave, and the later write would restore the revoked token.
+        with self._write_lock:
+            tmp = self.path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(doc, f, indent=2)
+            os.replace(tmp, self.path)
+            # Two saves can land on the same file timestamp (Windows): never rely on it to
+            # notice our own change.
+            with self._lock:
+                stat = os.stat(self.path)
+                self._doc, self._mtime = copy.deepcopy(doc), (stat.st_mtime_ns, stat.st_size)
+
+    def update(self, change) -> dict:
+        """Read-modify-write as one step: `change(doc)` edits the current document under the
+        write lock, so no other save can slip between the read and the write."""
+        with self._write_lock:
+            doc = self.settings()
+            change(doc)
+            self.save(doc)
+            return doc
 
     def role_of(self, identity: str, mcp_local: bool = False) -> str:
         doc = self._load()
@@ -197,6 +219,7 @@ class Policy:
     def sql_generator(self) -> str:
         return str(self._load().get("sql_generator", "auto"))
 
+    @_atomic
     def issue_mcp_token(self, identity: str) -> str:
         """Generate a unique personal MCP Bearer token for `identity`, storing only its
         SHA-256 hash in the settings file. Returns the raw token once."""
@@ -212,6 +235,7 @@ class Policy:
         self.save(doc)
         return raw
 
+    @_atomic
     def revoke_mcp_token(self, identity: str) -> bool:
         doc = self.settings()
         removed = bool((doc.get("mcp_tokens") or {}).pop(identity, None))
@@ -241,6 +265,7 @@ class Policy:
     def has_account(self, identity: str) -> bool:
         return identity in (self._load().get("accounts") or {})
 
+    @_atomic
     def register_account(self, identity: str, password: str, by_operator: bool = False) -> str:
         """Create a new password-protected account and return its role.
 
@@ -288,6 +313,7 @@ class Policy:
             return False
         return hmac.compare_digest(computed, entry.get("hash", ""))
 
+    @_atomic
     def issue_session_token(self, identity: str) -> str:
         """Mint an opaque web session token (`ses_...`), storing only its SHA-256 hash."""
         raw = "ses_" + secrets.token_urlsafe(32)
@@ -310,6 +336,7 @@ class Policy:
             return None   # expired sessions stop working at once, not when someone next signs in
         return entry.get("user")
 
+    @_atomic
     def revoke_session_token(self, raw_token: str) -> None:
         if not raw_token or not raw_token.startswith("ses_"):
             return
