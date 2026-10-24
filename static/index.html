@@ -1,0 +1,722 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>SQL-Agent</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b0d12'/%3E%3Ccircle cx='16' cy='16' r='7' fill='%2336d1e0'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ── tokens ─────────────────────────────────────────────── */
+:root{
+  --bg:#0b0d12;--bg2:#10141c;--panel:#121722;--panel2:#161c29;--line:#222b3a;--line2:#2c3648;
+  --t1:#f1f4f8;--t2:#9aa6b8;--t3:#5f6b7f;
+  --accent:#36d1e0;--accent2:#1fb3c2;--accent-ink:#06282d;
+  --ok:#4ade80;--warn:#f2c14e;--err:#ff6b6b;--violet:#b08cff;
+  --font:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;--mono:'JetBrains Mono',Consolas,monospace;
+  --r:12px;--r2:18px;--shadow:0 10px 40px rgba(0,0,0,.45);
+  --side:300px;--ease:cubic-bezier(.2,.8,.2,1);
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--t1);font-family:var(--font);font-size:15px;line-height:1.45;-webkit-font-smoothing:antialiased}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer;border:0;background:none}
+a{color:var(--accent);text-decoration:none}
+::selection{background:rgba(54,209,224,.3)}
+.hidden{display:none !important}
+.sr{position:absolute;left:-9999px}
+
+/* ── form controls ──────────────────────────────────────── */
+.in{width:100%;padding:11px 13px;background:var(--bg2);border:1px solid var(--line);border-radius:10px;outline:0;transition:border-color .15s,box-shadow .15s}
+.in::placeholder{color:var(--t3)}
+.in:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(54,209,224,.15)}
+select.in{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%239aa6b8' stroke-width='1.6'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center;padding-right:32px}
+.lbl{display:block;font-size:12px;font-weight:600;letter-spacing:.4px;color:var(--t2);margin:12px 0 6px;text-transform:uppercase}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:10px 16px;border-radius:10px;font-weight:600;background:var(--panel2);border:1px solid var(--line2);transition:transform .12s var(--ease),background .15s,border-color .15s;white-space:nowrap}
+.btn:hover{background:#1b2232;border-color:#3a4659}
+.btn:active{transform:scale(.97)}
+.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:transparent}
+.btn.primary:hover{background:#4fdcea}
+.btn.ghost{background:transparent;border-color:transparent;color:var(--t2)}
+.btn.ghost:hover{background:var(--panel2);color:var(--t1)}
+.btn.danger{color:var(--err)}
+.btn.sm{padding:6px 10px;font-size:13px;border-radius:8px}
+.btn:disabled{opacity:.5;cursor:not-allowed;transform:none}
+.pw{position:relative}
+.pw .in{padding-right:44px}
+.pw button{position:absolute;right:6px;top:50%;transform:translateY(-50%);padding:6px 8px;color:var(--t3);border-radius:6px}
+.pw button:hover{color:var(--t1);background:var(--panel2)}
+.err{color:var(--err);font-size:13px;margin-top:8px;min-height:1.2em}
+.chk{display:flex;align-items:flex-start;gap:10px;margin-top:14px;font-size:13.5px;color:var(--t2);cursor:pointer}
+.chk input{margin-top:3px;accent-color:var(--accent)}
+
+/* ── auth screen ────────────────────────────────────────── */
+#auth{position:fixed;inset:0;display:grid;place-items:center;padding:20px;background:radial-gradient(900px 500px at 50% -10%,#15243a,transparent 60%),var(--bg)}
+.card{width:min(420px,100%);background:var(--panel);border:1px solid var(--line);border-radius:var(--r2);padding:30px 28px;box-shadow:var(--shadow);animation:rise .4s var(--ease)}
+@keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:18px;letter-spacing:.5px}
+.logo i{width:28px;height:28px;border-radius:8px;background:var(--accent);display:grid;place-items:center;color:var(--accent-ink);font-style:normal;font-size:14px}
+.card h1{font-size:22px;margin:18px 0 4px}
+.card p{color:var(--t2);margin:0 0 6px}
+.switch{text-align:center;margin-top:16px;color:var(--t2);font-size:13.5px}
+
+/* ── app shell ──────────────────────────────────────────── */
+#app{display:grid;grid-template-columns:var(--side) 1fr;height:100dvh}
+aside{background:var(--bg2);border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
+.brand{display:flex;align-items:center;justify-content:space-between;padding:16px 16px 12px}
+.side-scroll{flex:1;overflow:auto;padding:0 12px 12px;min-height:0}
+.sec{margin-top:14px}
+.sec h3{display:flex;align-items:center;justify-content:space-between;font-size:11.5px;font-weight:700;letter-spacing:1px;color:var(--t3);margin:0 4px 8px;text-transform:uppercase}
+.sec h3 button{color:var(--accent);font-size:12px;font-weight:600;padding:2px 6px;border-radius:6px}
+.sec h3 button:hover{background:var(--panel2)}
+.row{display:flex;align-items:center;gap:10px;width:100%;padding:9px 10px;border-radius:10px;text-align:left;transition:background .12s}
+.row:hover{background:var(--panel2)}
+.row.active{background:var(--panel2);box-shadow:inset 0 0 0 1px var(--line2)}
+.row .dot{width:8px;height:8px;border-radius:50%;background:var(--ok);flex:none;box-shadow:0 0 8px var(--ok)}
+.row .dot.off{background:var(--t3);box-shadow:none}
+.row .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .meta{font-size:11.5px;color:var(--t3)}
+.row .x{color:var(--t3);padding:2px 6px;border-radius:6px;opacity:0;transition:opacity .12s}
+.row:hover .x{opacity:1}
+.row .x:hover{color:var(--err);background:rgba(255,107,107,.1)}
+.empty{color:var(--t3);font-size:13px;padding:6px 10px}
+.me{display:flex;align-items:center;gap:10px;padding:12px 16px;border-top:1px solid var(--line)}
+.me .av{width:30px;height:30px;border-radius:50%;background:var(--violet);color:#1a1030;display:grid;place-items:center;font-weight:700;font-size:13px}
+.me .who{flex:1;min-width:0}
+.me .who b{display:block;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.me .who span{font-size:12px;color:var(--t3)}
+.me .btn{padding:6px 8px}
+
+main{display:flex;flex-direction:column;min-width:0;min-height:0}
+header{display:flex;align-items:center;gap:12px;padding:12px 18px;border-bottom:1px solid var(--line);background:var(--bg)}
+header .burger{display:none;padding:8px;border-radius:8px}
+header .title{flex:1;min-width:0}
+header .title b{display:block;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+header .title span{font-size:12.5px;color:var(--t3)}
+.pill{display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border-radius:999px;background:var(--panel);border:1px solid var(--line);font-size:13px;max-width:280px}
+.pill .name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+#feed{flex:1;overflow:auto;padding:22px clamp(16px,4vw,48px);scroll-behavior:smooth}
+.msgs{max-width:1100px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
+
+/* empty state */
+.hero{max-width:760px;margin:6vh auto 0;text-align:center;animation:rise .4s var(--ease)}
+.hero h2{font-size:26px;margin:0 0 6px}
+.hero p{color:var(--t2);margin:0 0 22px}
+.chips{display:flex;flex-wrap:wrap;gap:10px;justify-content:center}
+.chip{padding:10px 14px;border-radius:999px;background:var(--panel);border:1px solid var(--line);font-size:14px;transition:border-color .15s,transform .12s var(--ease)}
+.chip:hover{border-color:var(--accent);transform:translateY(-1px)}
+.tables{margin-top:28px;display:flex;flex-wrap:wrap;gap:8px;justify-content:center}
+.tables span{font-family:var(--mono);font-size:12px;color:var(--t2);padding:5px 9px;border-radius:8px;background:var(--bg2);border:1px solid var(--line)}
+
+/* messages */
+.q{align-self:flex-end;max-width:min(720px,92%);background:#16283a;border:1px solid #244257;border-radius:16px 16px 4px 16px;padding:12px 16px;animation:rise .25s var(--ease)}
+.a{align-self:stretch;animation:rise .3s var(--ease)}
+.steps{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+.step{display:inline-flex;align-items:center;gap:7px;padding:5px 11px;border-radius:999px;font-size:12.5px;background:var(--panel);border:1px solid var(--line);color:var(--t3);transition:all .25s}
+.step.on{color:var(--t1);border-color:var(--accent);box-shadow:0 0 0 3px rgba(54,209,224,.12)}
+.step.done{color:var(--ok);border-color:transparent;background:rgba(74,222,128,.08)}
+.step i{width:7px;height:7px;border-radius:50%;background:currentColor;font-style:normal}
+.step.on i{animation:pulse 1s infinite}
+@keyframes pulse{50%{opacity:.25}}
+.ans{background:var(--panel);border:1px solid var(--line);border-radius:var(--r2);overflow:hidden}
+.ans .text{padding:16px 18px;font-size:15.5px;border-bottom:1px solid var(--line);min-height:52px}
+.cursor::after{content:"▍";color:var(--accent);animation:pulse .9s infinite;margin-left:1px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:0}
+.grid>div{padding:14px 18px;min-width:0}
+.grid>div+div{border-left:1px solid var(--line)}
+.grid.one{grid-template-columns:1fr}
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th{text-align:left;color:var(--t2);font-weight:600;font-size:12px;letter-spacing:.3px;padding:8px 10px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--panel)}
+td{padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:320px}
+td.num{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--mono);font-size:13px}
+.tbl{max-height:380px;overflow:auto;border-radius:10px;border:1px solid var(--line)}
+.bars{display:flex;flex-direction:column;gap:8px;margin-top:4px}
+.bar{display:grid;grid-template-columns:minmax(80px,32%) 1fr auto;align-items:center;gap:10px;font-size:13px}
+.bar .lab{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--t2)}
+.bar .trk{height:12px;background:var(--bg2);border-radius:6px;overflow:hidden}
+.bar .fil{height:100%;width:0;border-radius:6px;background:linear-gradient(90deg,var(--accent2),var(--accent));transition:width .7s var(--ease)}
+.bar .val{font-family:var(--mono);font-size:12.5px;font-variant-numeric:tabular-nums}
+.foot{display:flex;align-items:center;gap:8px;padding:10px 14px;border-top:1px solid var(--line);flex-wrap:wrap}
+.foot .sp{flex:1}
+.foot .lat{font-size:12px;color:var(--t3)}
+.meta-chip{font-size:12px;color:var(--t3);padding:4px 8px;border-radius:6px;background:var(--bg2)}
+details.sql{border-top:1px solid var(--line)}
+details.sql summary{padding:10px 16px;cursor:pointer;color:var(--t2);font-size:13px;list-style:none;display:flex;align-items:center;gap:8px}
+details.sql summary::before{content:"›";display:inline-block;transition:transform .2s}
+details.sql[open] summary::before{transform:rotate(90deg)}
+pre{margin:0;padding:12px 16px 16px;font-family:var(--mono);font-size:12.5px;line-height:1.55;color:#cfd8e6;overflow:auto;white-space:pre-wrap;word-break:break-word}
+.notice{padding:12px 16px;border-radius:12px;background:rgba(255,107,107,.08);border:1px solid rgba(255,107,107,.3);color:#ffb3b3;font-size:14px}
+.notice.warn{background:rgba(242,193,78,.08);border-color:rgba(242,193,78,.3);color:#f7d98a}
+
+/* composer */
+.composer{padding:12px clamp(16px,4vw,48px) 16px;border-top:1px solid var(--line);background:var(--bg)}
+.composer form{max-width:1100px;margin:0 auto;display:flex;gap:10px;align-items:flex-end}
+.composer textarea{flex:1;resize:none;max-height:160px;min-height:48px;padding:13px 14px;border-radius:14px;background:var(--panel);border:1px solid var(--line);outline:0;line-height:1.4;transition:border-color .15s,box-shadow .15s}
+.composer textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(54,209,224,.15)}
+.send{width:48px;height:48px;border-radius:14px;background:var(--accent);color:var(--accent-ink);display:grid;place-items:center;flex:none;transition:transform .12s var(--ease),background .15s}
+.send:hover{background:#4fdcea}.send:active{transform:scale(.95)}
+.send:disabled{background:var(--panel2);color:var(--t3)}
+.composer .hint{max-width:1100px;margin:6px auto 0;font-size:12px;color:var(--t3);display:flex;gap:14px}
+
+/* modal */
+.modal{position:fixed;inset:0;z-index:50;display:grid;place-items:center;padding:16px;background:rgba(5,7,11,.6);backdrop-filter:blur(6px);animation:fade .18s}
+@keyframes fade{from{opacity:0}}
+.modal .box{width:min(560px,100%);max-height:92dvh;overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:var(--r2);box-shadow:var(--shadow);animation:rise .25s var(--ease)}
+.box .hd{display:flex;align-items:center;justify-content:space-between;padding:18px 22px 0}
+.box .hd h2{margin:0;font-size:18px}
+.box .bd{padding:6px 22px 22px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.progress{display:flex;flex-direction:column;gap:7px;margin-top:10px}
+.progress div{display:flex;align-items:center;gap:9px;font-size:13.5px;color:var(--t2);animation:rise .2s var(--ease)}
+.progress div::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--accent)}
+.progress div.ok::before{background:var(--ok)}
+.progress div.err{color:var(--err)}.progress div.err::before{background:var(--err)}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:13.5px;margin-top:10px}
+.kv b{color:var(--t2);font-weight:500}
+code.tok{display:block;font-family:var(--mono);font-size:12.5px;padding:10px 12px;border-radius:8px;background:var(--bg2);border:1px solid var(--line);word-break:break-all;user-select:all;margin-top:8px}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(20px);opacity:0;background:var(--panel2);border:1px solid var(--line2);padding:10px 16px;border-radius:999px;font-size:14px;box-shadow:var(--shadow);transition:all .25s var(--ease);z-index:60;pointer-events:none}
+.toast.show{opacity:1;transform:translateX(-50%)}
+
+/* ── responsive ─────────────────────────────────────────── */
+.scrim{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:30}
+@media (max-width:900px){
+  #app{grid-template-columns:1fr}
+  aside{position:fixed;inset:0 auto 0 0;width:min(320px,86vw);z-index:40;transform:translateX(-100%);transition:transform .28s var(--ease);box-shadow:var(--shadow)}
+  body.side-open aside{transform:none}
+  body.side-open .scrim{display:block}
+  header .burger{display:inline-flex}
+  header .pill{display:none}
+  .grid{grid-template-columns:1fr}
+  .grid>div+div{border-left:0;border-top:1px solid var(--line)}
+  .q{max-width:100%}
+  .hero h2{font-size:22px}
+  .two{grid-template-columns:1fr}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none !important;transition:none !important}}
+</style>
+</head>
+<body>
+
+<!-- ═══ AUTH ═══ -->
+<section id="auth">
+  <div class="card">
+    <div class="logo"><i>▲</i>SQL-Agent</div>
+    <h1 id="auth-title">Sign in</h1>
+    <p>Ask your databases questions in plain language.</p>
+    <form id="auth-form" autocomplete="on">
+      <label class="lbl" for="u">Username or email</label>
+      <input class="in" id="u" name="username" autocomplete="username" placeholder="e.g. alice" required>
+      <label class="lbl" for="p">Password</label>
+      <div class="pw"><input class="in" id="p" name="password" type="password" autocomplete="current-password" required minlength="8"><button type="button" data-eye="p" aria-label="Show password">👁</button></div>
+      <p id="pw-rule" class="hidden" style="font-size:12.5px;color:var(--t3);margin:8px 0 0">At least 8 characters with an upper-case letter, a lower-case letter, a number and a symbol.</p>
+      <div class="err" id="auth-err" role="alert"></div>
+      <button class="btn primary" style="width:100%;margin-top:6px" id="auth-go">Sign in</button>
+    </form>
+    <div class="switch">
+      <span id="switch-text">New here?</span> <a href="#" id="switch">Create an account</a>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ APP ═══ -->
+<div id="app" class="hidden">
+  <div class="scrim" id="scrim"></div>
+  <aside>
+    <div class="brand"><div class="logo"><i>▲</i>SQL-Agent</div><button class="btn ghost sm" id="side-close" aria-label="Close menu">✕</button></div>
+    <div class="side-scroll">
+      <div class="sec">
+        <h3>Databases <button id="add-db">+ Add</button></h3>
+        <div id="db-list"></div>
+      </div>
+      <div class="sec">
+        <h3>Conversations <button id="new-chat">+ New</button></h3>
+        <div id="chat-list"></div>
+      </div>
+    </div>
+    <div class="me">
+      <div class="av" id="av">?</div>
+      <div class="who"><b id="me-name"></b><span id="me-role"></span></div>
+      <button class="btn ghost sm" id="open-ai" title="Your AI model">🤖</button>
+      <button class="btn ghost sm" id="open-mcp" title="Connect Claude Code (MCP)">🔑</button>
+      <button class="btn ghost sm" id="logout" title="Sign out">⏻</button>
+    </div>
+  </aside>
+
+  <main>
+    <header>
+      <button class="burger btn ghost" id="burger" aria-label="Menu">☰</button>
+      <div class="title"><b id="h-title">No database connected</b><span id="h-sub">Add a database to start</span></div>
+      <div class="pill" id="h-pill"><span class="dot" style="width:8px;height:8px;border-radius:50%;background:var(--t3);display:inline-block"></span><span class="name" id="h-pill-name">not connected</span></div>
+      <button class="btn ghost sm" id="refresh" title="Re-read the schema">↻</button>
+    </header>
+
+    <div id="feed"><div class="msgs" id="msgs"></div></div>
+
+    <div class="composer">
+      <form id="ask">
+        <textarea id="qbox" rows="1" placeholder="Ask anything about your data…" disabled></textarea>
+        <button class="send" id="send" type="submit" disabled aria-label="Send">➤</button>
+      </form>
+      <div class="hint"><span>Enter to send · Shift+Enter for a new line</span><span id="hint-db"></span></div>
+    </div>
+  </main>
+</div>
+
+<div id="modal-root"></div>
+<div class="toast" id="toast"></div>
+
+<script>
+/* ═══════════════════════ state ═══════════════════════ */
+const S = {
+  token: null, me: null, config: {},
+  connections: [], active: null, tables: [],
+  sessions: [], session: null, busy: false, chartLib: null,
+};
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt = v => typeof v === 'number' ? (Number.isInteger(v) ? v.toLocaleString() : v.toLocaleString(undefined, {maximumFractionDigits: 2})) : (v ?? '');
+const isNum = v => typeof v === 'number' && !Number.isNaN(v);
+const uid = () => (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2)).slice(0, 12);
+
+function toast(msg, ms = 2600) {
+  const t = $('#toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), ms);
+}
+
+async function api(path, opts = {}) {
+  const headers = { ...(opts.headers || {}) };
+  if (S.token) headers.Authorization = `Bearer ${S.token}`;
+  if (opts.json !== undefined) { headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(opts.json); }
+  const r = await fetch(path, { ...opts, headers });
+  if (r.status === 401 && S.token && !path.startsWith('/api/auth/')) { signOut(true); throw new Error('Signed out'); }
+  return r;
+}
+async function j(path, opts) {
+  const r = await api(path, opts);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data?.detail?.message || data?.detail || data?.message || `Request failed (${r.status})`);
+  return data;
+}
+/* Server-sent events over fetch: handles chunk boundaries, calls onEvent per JSON event. */
+async function sse(path, body, onEvent) {
+  const r = await api(path, { method: 'POST', json: body });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    const err = new Error(d?.detail?.message || d?.detail || `Request failed (${r.status})`);
+    err.status = r.status; err.detail = d?.detail; throw err;   // 423 carries which connection is locked
+  }
+  const reader = r.body.getReader(), dec = new TextDecoder();
+  let buf = '';
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let i;
+    while ((i = buf.indexOf('\n\n')) >= 0) {
+      const block = buf.slice(0, i); buf = buf.slice(i + 2);
+      for (const line of block.split('\n')) if (line.startsWith('data:')) {
+        try { onEvent(JSON.parse(line.slice(5))); } catch (_) {}
+      }
+    }
+  }
+}
+
+/* ═══════════════════════ auth ═══════════════════════ */
+let mode = 'login';
+$('#switch').onclick = e => {
+  e.preventDefault(); mode = mode === 'login' ? 'register' : 'login';
+  $('#auth-title').textContent = mode === 'login' ? 'Sign in' : 'Create your account';
+  $('#auth-go').textContent = mode === 'login' ? 'Sign in' : 'Create account';
+  $('#switch-text').textContent = mode === 'login' ? 'New here?' : 'Already have an account?';
+  $('#switch').textContent = mode === 'login' ? 'Create an account' : 'Sign in';
+  $('#pw-rule').classList.toggle('hidden', mode === 'login');
+  $('#p').autocomplete = mode === 'login' ? 'current-password' : 'new-password';
+  $('#auth-err').textContent = '';
+};
+document.addEventListener('click', e => {
+  const b = e.target.closest('[data-eye]'); if (!b) return;
+  const i = $('#' + b.dataset.eye); i.type = i.type === 'password' ? 'text' : 'password';
+});
+$('#auth-form').onsubmit = async e => {
+  e.preventDefault();
+  const btn = $('#auth-go'); btn.disabled = true; $('#auth-err').textContent = '';
+  try {
+    const d = await j(`/api/auth/${mode}`, { method: 'POST', json: { username: $('#u').value.trim(), password: $('#p').value } });
+    S.token = d.token; try { sessionStorage.setItem('nldb_session_token', d.token); } catch (_) {}
+    await enter();
+  } catch (err) { $('#auth-err').textContent = err.message; }
+  btn.disabled = false;
+};
+function signOut(expired) {
+  if (S.token && !expired) api('/api/auth/logout', { method: 'POST' }).catch(() => {});
+  S.token = null; S.me = null; try { sessionStorage.removeItem('nldb_session_token'); } catch (_) {}
+  $('#app').classList.add('hidden'); $('#auth').classList.remove('hidden');
+  if (expired) $('#auth-err').textContent = 'Your session ended. Please sign in again.';
+}
+$('#logout').onclick = () => signOut(false);
+
+/* ═══════════════════════ boot ═══════════════════════ */
+async function boot() {
+  try { S.config = await (await fetch('/api/config')).json(); } catch (_) {}
+  try { S.token = sessionStorage.getItem('nldb_session_token'); } catch (_) {}
+  if (S.token) { try { await enter(); return; } catch (_) { S.token = null; } }
+  $('#auth').classList.remove('hidden');
+}
+async function enter() {
+  S.me = await j('/api/me');
+  $('#auth').classList.add('hidden'); $('#app').classList.remove('hidden');
+  $('#me-name').textContent = S.me.user; $('#me-role').textContent = S.me.role;
+  $('#av').textContent = S.me.user[0].toUpperCase();
+  await Promise.all([loadConnections(), loadSessions()]);
+  if (S.active) { try { const d = await j(`/api/connections/${encodeURIComponent(S.active.id)}/activate`, { method: 'POST' }); S.tables = d.tables || []; renderHeader(); } catch (_) {} }
+  renderHero();
+}
+const can = p => (S.me?.permissions || []).includes(p);
+
+/* ═══════════════════════ sidebar ═══════════════════════ */
+$('#burger').onclick = () => document.body.classList.add('side-open');
+$('#side-close').onclick = $('#scrim').onclick = () => document.body.classList.remove('side-open');
+
+async function loadConnections() {
+  const d = await j('/api/connections');
+  S.connections = d.connections || [];
+  S.active = S.connections.find(c => c.active) || null;
+  renderDbs(); renderHeader();
+}
+function renderDbs() {
+  const el = $('#db-list');
+  if (!S.connections.length) { el.innerHTML = `<div class="empty">No database yet.</div>`; return; }
+  el.innerHTML = S.connections.map(c => `
+    <button class="row ${c.active ? 'active' : ''}" data-act="${esc(c.id)}">
+      <span class="dot"></span><span class="name">${esc(c.label)}</span>
+      <span class="x" data-dc="${esc(c.id)}" title="Disconnect">✕</span>
+    </button>`).join('');
+}
+$('#db-list').onclick = async e => {
+  const dc = e.target.closest('[data-dc]');
+  if (dc) { e.stopPropagation(); await j(`/api/disconnect?connection_id=${encodeURIComponent(dc.dataset.dc)}`, { method: 'POST' }); await loadConnections(); if (!S.active) renderHero(); toast('Disconnected'); return; }
+  const b = e.target.closest('[data-act]'); if (!b) return;
+  const d = await j(`/api/connections/${encodeURIComponent(b.dataset.act)}/activate`, { method: 'POST' });
+  S.connections = d.connections || S.connections; S.active = S.connections.find(c => c.active) || null;
+  S.tables = d.tables || S.tables;
+  renderDbs(); renderHeader(); if (!S.session) renderHero();
+  document.body.classList.remove('side-open');
+};
+function renderHeader() {
+  const a = S.active, on = !!a;
+  $('#h-title').textContent = a ? a.label : 'No database connected';
+  $('#h-sub').textContent = a ? `${S.tables.length ? S.tables.length + ' tables · ' : ''}${S.connections.length} open` : 'Add a database to start';
+  $('#h-pill-name').textContent = a ? a.label : 'not connected';
+  $('#h-pill .dot').style.background = on ? 'var(--ok)' : 'var(--t3)';
+  $('#qbox').disabled = $('#send').disabled = !on;
+  $('#hint-db').textContent = a ? `answering from ${a.label}` : '';
+  if (on) $('#qbox').focus();
+}
+$('#refresh').onclick = async () => {
+  if (!S.active) return;
+  $('#refresh').style.transform = 'rotate(360deg)';
+  try { const d = await j('/api/refresh', { method: 'POST' }); S.tables = d.tables || []; renderHeader(); toast(`Schema refreshed · ${S.tables.length} tables`); }
+  catch (err) { toast(err.message); }
+  setTimeout(() => $('#refresh').style.transform = '', 300);
+};
+
+async function loadSessions() {
+  const d = await j('/api/sessions'); S.sessions = d.sessions || []; renderSessions();
+}
+function renderSessions() {
+  const el = $('#chat-list');
+  if (!S.sessions.length) { el.innerHTML = `<div class="empty">Your questions will appear here.</div>`; return; }
+  el.innerHTML = S.sessions.map(s => `
+    <button class="row ${s.id === S.session ? 'active' : ''}" data-open="${esc(s.id)}">
+      <span class="name">${esc(s.title || 'Untitled')}<br><span class="meta">${esc(s.connection || '')}${s.turns ? ' · ' + s.turns : ''}</span></span>
+      <span class="x" data-del="${esc(s.id)}" title="Delete">✕</span>
+    </button>`).join('');
+}
+$('#chat-list').onclick = async e => {
+  const del = e.target.closest('[data-del]');
+  if (del) { e.stopPropagation(); await j(`/api/sessions/${encodeURIComponent(del.dataset.del)}`, { method: 'DELETE' }); if (S.session === del.dataset.del) newChat(); await loadSessions(); return; }
+  const b = e.target.closest('[data-open]'); if (!b) return;
+  await openSession(b.dataset.open); document.body.classList.remove('side-open');
+};
+$('#new-chat').onclick = () => { newChat(); document.body.classList.remove('side-open'); };
+function newChat() { S.session = null; renderSessions(); renderHero(); }
+async function openSession(id) {
+  const d = await j(`/api/sessions/${encodeURIComponent(id)}`);
+  S.session = id; renderSessions();
+  const m = $('#msgs'); m.innerHTML = '';
+  for (const t of d.messages || []) {
+    addQuestion(t.question);
+    const a = addAnswer(true); finishAnswer(a, { answer: t.answer, columns: t.columns || [], rows: t.rows || [], query: t.sql, verified: t.verified, total_rows: t.total_rows }, t.question, true);
+  }
+  if (d.closed_message) { const n = document.createElement('div'); n.className = 'notice warn'; n.textContent = d.closed_message; m.appendChild(n); }
+  if (d.connection?.id && S.active?.id !== d.connection.id && d.connection_open) { await loadConnections(); }
+  $('#feed').scrollTop = $('#feed').scrollHeight;
+}
+
+/* ═══════════════════════ empty state ═══════════════════════ */
+function suggest() {
+  const t = S.tables.map(x => String(x).toLowerCase());
+  const has = w => t.some(n => n.includes(w));
+  const qs = [];
+  if (has('order')) qs.push('How many orders did we get each month this year?', 'Which 5 customers spent the most last month?');
+  if (has('customer') || has('user')) qs.push('How many new customers joined this quarter?');
+  if (has('product') || has('item')) qs.push('What are our top-selling products?');
+  if (has('invoice') || has('payment')) qs.push('What was total revenue last month, by status?');
+  if (has('ticket') || has('support')) qs.push('How many open tickets are there, by priority?');
+  if (!qs.length) qs.push('What tables are in this database and what do they hold?', 'Show me 10 rows from the biggest table.', 'Which columns have the most missing values?');
+  return qs.slice(0, 4);
+}
+function renderHero() {
+  const m = $('#msgs');
+  if (!S.active) {
+    m.innerHTML = `<div class="hero"><h2>Connect a database</h2><p>Add a database on the left. Nothing leaves it except the rows a question needs.</p>
+      <div class="chips"><button class="chip" id="hero-add">+ Add a database</button></div></div>`;
+    $('#hero-add').onclick = () => openConnect(); return;
+  }
+  m.innerHTML = `<div class="hero"><h2>Ask ${esc(S.active.label)}</h2><p>Plain language in, a checked read-only query out. Try one of these:</p>
+    <div class="chips">${suggest().map(q => `<button class="chip" data-q="${esc(q)}">${esc(q)}</button>`).join('')}</div>
+    ${S.tables.length ? `<div class="tables">${S.tables.slice(0, 24).map(t => `<span>${esc(t)}</span>`).join('')}${S.tables.length > 24 ? `<span>+${S.tables.length - 24} more</span>` : ''}</div>` : ''}
+  </div>`;
+  $$('[data-q]', m).forEach(b => b.onclick = () => { $('#qbox').value = b.dataset.q; $('#ask').requestSubmit(); });
+}
+
+/* ═══════════════════════ asking ═══════════════════════ */
+const qbox = $('#qbox');
+qbox.addEventListener('input', () => { qbox.style.height = 'auto'; qbox.style.height = Math.min(qbox.scrollHeight, 160) + 'px'; });
+qbox.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('#ask').requestSubmit(); } });
+
+function addQuestion(q) {
+  if ($('.hero', $('#msgs'))) $('#msgs').innerHTML = '';
+  const el = document.createElement('div'); el.className = 'q'; el.textContent = q; $('#msgs').appendChild(el); return el;
+}
+const STEPS = [['tables', 'Finding tables'], ['sql', 'Writing query'], ['run', 'Running'], ['answer', 'Answering']];
+function addAnswer(history) {
+  const el = document.createElement('div'); el.className = 'a';
+  el.innerHTML = `${history ? '' : `<div class="steps">${STEPS.map(([k, l]) => `<span class="step" data-s="${k}"><i></i>${l}</span>`).join('')}</div>`}
+    <div class="ans"><div class="text cursor"></div></div>`;
+  $('#msgs').appendChild(el); $('#feed').scrollTop = $('#feed').scrollHeight; return el;
+}
+function setStep(el, k, state) { const s = $(`[data-s="${k}"]`, el); if (s) { s.classList.remove('on', 'done'); if (state) s.classList.add(state); } }
+
+$('#ask').onsubmit = async e => {
+  e.preventDefault();
+  const q = qbox.value.trim(); if (!q || S.busy || !S.active) return;
+  qbox.value = ''; qbox.style.height = 'auto'; S.busy = true; $('#send').disabled = true;
+  if (!S.session) S.session = uid();
+  addQuestion(q);
+  const a = addAnswer(), text = $('.text', a);
+  let got = '', final = null, failed = null;
+  setStep(a, 'tables', 'on');
+  try {
+    await sse('/api/query/stream', { question: q, session_id: S.session, connection_id: S.active.id }, ev => {
+      if (ev.token !== undefined) { if (!got) { setStep(a, 'tables', 'done'); setStep(a, 'sql', 'on'); } got += ev.token; text.textContent = got; }
+      else if (ev.error) { failed = ev; }
+      else if (ev.done) { final = ev; }
+      else if (ev.phase) { /* connect-style phases are not used on this route */ }
+    });
+  } catch (err) {
+    if (err.status === 423 && err.detail?.locked) {   // idle-locked database: ask for its password, then retry
+      a.previousElementSibling?.remove(); a.remove(); S.busy = false; $('#send').disabled = false;
+      openUnlock(err.detail.locked, q); return;
+    }
+    failed = { message: err.message };
+  }
+  text.classList.remove('cursor');
+  if (failed) {
+    STEPS.forEach(([k]) => setStep(a, k, null));
+    $('.ans', a).innerHTML = `<div class="text"><div class="notice">${esc(failed.message || failed.error || 'Something went wrong.')}</div>
+      ${failed.query && can('view.sql') ? `<details class="sql" style="margin-top:10px"><summary>The query that failed</summary><pre>${esc(failed.query)}</pre></details>` : ''}</div>`;
+  } else if (final) {
+    ['tables', 'sql', 'run'].forEach(k => setStep(a, k, 'done')); setStep(a, 'answer', 'on');
+    finishAnswer(a, final, q, false);
+    setStep(a, 'answer', 'done');
+    if (final.connections) { S.connections = final.connections; S.active = S.connections.find(c => c.active) || S.active; renderDbs(); renderHeader(); }
+    loadSessions();
+  }
+  S.busy = false; $('#send').disabled = !S.active; qbox.focus();
+  $('#feed').scrollTop = $('#feed').scrollHeight;
+};
+
+/* ═══════════════════════ rendering an answer ═══════════════════════ */
+function finishAnswer(el, d, question, fromHistory) {
+  const cols = d.columns || [], rows = d.rows || [];
+  const ans = $('.ans', el);
+  const chart = pickChart(cols, rows);
+  const numIdx = new Set(cols.map((c, i) => rows.length && rows.every(r => r[i] == null || isNum(r[i])) ? i : -1).filter(i => i >= 0));
+  const table = rows.length ? `<div class="tbl"><table><thead><tr>${cols.map(c => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>
+    ${rows.slice(0, 200).map(r => `<tr>${r.map((v, i) => `<td class="${numIdx.has(i) ? 'num' : ''}" title="${esc(v)}">${esc(fmt(v))}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
+    ${rows.length > 200 ? `<div class="meta-chip" style="margin-top:8px">showing 200 of ${rows.length.toLocaleString()} rows</div>` : ''}` : '';
+  ans.innerHTML = `
+    <div class="text">${esc(d.answer || (rows.length ? '' : 'No matching data found.'))}</div>
+    ${rows.length ? `<div class="grid ${chart ? '' : 'one'}"><div>${table}</div>${chart ? `<div class="chart-slot"></div>` : ''}</div>` : ''}
+    <div class="foot">
+      ${rows.length ? `<button class="btn sm" data-dl>⤓ CSV</button>` : ''}
+      ${!fromHistory && can('feedback') ? `<span class="meta-chip">Was this right?</span><button class="btn sm" data-fb="1">👍</button><button class="btn sm" data-fb="0">👎</button>` : ''}
+      ${d.verified ? `<span class="meta-chip" style="color:var(--ok)">✓ verified answer</span>` : ''}
+      <span class="sp"></span>
+      <span class="lat">${(d.total_rows || rows.length).toLocaleString()} rows${d.total_rows > rows.length ? ` (first ${rows.length} kept)` : ''}${d.latency_ms ? ` · ${d.latency_ms} ms` : ''}</span>
+    </div>
+    ${d.query && can('view.sql') ? `<details class="sql"><summary>How I got this</summary><pre>${esc(d.query)}</pre>
+      ${(d.review || []).length ? `<div style="padding:0 16px 12px;color:var(--t2);font-size:12.5px">${d.review.map(r => `· ${esc(r)}`).join('<br>')}</div>` : ''}</details>` : ''}`;
+  if (chart) renderChart($('.chart-slot', ans), chart, cols, rows);
+  const dl = $('[data-dl]', ans); if (dl) dl.onclick = () => download(cols, rows, question);
+  $$('[data-fb]', ans).forEach(b => b.onclick = async () => {
+    const ok = b.dataset.fb === '1';
+    try { await j('/api/feedback', { method: 'POST', json: { question, sql: d.query || '', session_id: S.session || '', is_correct: ok } }); toast(ok ? 'Thanks — remembered as a verified answer' : 'Thanks — that answer will not be reused'); $$('[data-fb]', ans).forEach(x => x.disabled = true); }
+    catch (err) { toast(err.message); }
+  });
+}
+/* Ranked totals -> horizontal bars (readable at a glance); a date + number -> line; everything else: none. */
+function pickChart(cols, rows) {
+  if (!rows.length || cols.length < 2 || rows.length > 60) return null;
+  const nums = cols.map((_, i) => rows.every(r => isNum(r[i]))).map((b, i) => b ? i : -1).filter(i => i >= 0);
+  const labels = cols.map((_, i) => !nums.includes(i) ? i : -1).filter(i => i >= 0);
+  if (!nums.length || !labels.length) return null;
+  const li = labels[0], vi = nums[0];
+  const dateLike = /date|month|year|week|day|time/i.test(cols[li]) || rows.every(r => /^\d{4}-\d{2}/.test(String(r[li])));
+  return { kind: dateLike && rows.length > 2 ? 'line' : 'bars', li, vi };
+}
+function renderChart(slot, c, cols, rows) {
+  if (c.kind === 'bars') {
+    const max = Math.max(...rows.map(r => Math.abs(r[c.vi]) || 0)) || 1;
+    slot.innerHTML = `<div class="meta-chip" style="margin-bottom:10px">${esc(cols[c.vi])} by ${esc(cols[c.li])}</div><div class="bars">${rows.slice(0, 15).map(r => `
+      <div class="bar"><span class="lab" title="${esc(r[c.li])}">${esc(r[c.li])}</span><span class="trk"><span class="fil" data-w="${(100 * Math.abs(r[c.vi]) / max).toFixed(1)}"></span></span><span class="val">${esc(fmt(r[c.vi]))}</span></div>`).join('')}</div>`;
+    requestAnimationFrame(() => $$('.fil', slot).forEach(f => f.style.width = f.dataset.w + '%'));
+    return;
+  }
+  slot.innerHTML = `<canvas height="220"></canvas>`;
+  loadChartLib().then(Chart => {
+    new Chart($('canvas', slot), { type: 'line', data: { labels: rows.map(r => r[c.li]), datasets: [{ data: rows.map(r => r[c.vi]), borderColor: '#36d1e0', backgroundColor: 'rgba(54,209,224,.15)', fill: true, tension: .3, pointRadius: 2 }] },
+      options: { responsive: true, plugins: { legend: { display: false } }, scales: { x: { ticks: { color: '#9aa6b8', maxTicksLimit: 8 }, grid: { color: '#222b3a' } }, y: { ticks: { color: '#9aa6b8' }, grid: { color: '#222b3a' } } } } });
+  }).catch(() => { slot.innerHTML = ''; });
+}
+function loadChartLib() {
+  if (window.Chart) return Promise.resolve(window.Chart);
+  if (S.chartLib) return S.chartLib;
+  S.chartLib = new Promise((res, rej) => { const s = document.createElement('script'); s.src = 'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js'; s.onload = () => res(window.Chart); s.onerror = rej; document.head.appendChild(s); });
+  return S.chartLib;
+}
+function download(cols, rows, name) {
+  const csv = [cols, ...rows].map(r => r.map(v => { const s = String(v ?? ''); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; }).join(',')).join('\n');
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); a.download = (name || 'result').replace(/[^\w]+/g, '_').slice(0, 60) + '.csv'; a.click(); URL.revokeObjectURL(a.href);
+}
+
+/* ═══════════════════════ modals ═══════════════════════ */
+function modal(title, bodyHtml) {
+  const root = $('#modal-root');
+  root.innerHTML = `<div class="modal" id="m"><div class="box"><div class="hd"><h2>${esc(title)}</h2><button class="btn ghost sm" data-close aria-label="Close">✕</button></div><div class="bd">${bodyHtml}</div></div></div>`;
+  const close = () => { root.innerHTML = ''; document.removeEventListener('keydown', onKey); };
+  const onKey = e => { if (e.key === 'Escape') close(); };
+  document.addEventListener('keydown', onKey);
+  $('#m').onclick = e => { if (e.target.id === 'm' || e.target.closest('[data-close]')) close(); };
+  return { el: $('#m .bd'), close };
+}
+
+const DBS = { SQLite: ['db_path'], PostgreSQL: ['host', 'port', 'username', 'password', 'database'], MySQL: ['host', 'port', 'username', 'password', 'database'], MariaDB: ['host', 'port', 'username', 'password', 'database'], 'SQL Server': ['host', 'port', 'username', 'password', 'database'], MongoDB: ['host', 'port', 'username', 'password', 'database'], Cassandra: ['host', 'port', 'username', 'password', 'keyspace'] };
+const PORTS = { PostgreSQL: '5432', MySQL: '3306', MariaDB: '3306', 'SQL Server': '1433', MongoDB: '27017', Cassandra: '9042' };
+function openConnect() {
+  const { el, close } = modal('Add a database', `
+    <form id="cf">
+      <label class="lbl">Database type</label>
+      <select class="in" name="db_type">${Object.keys(DBS).map(k => `<option>${k}</option>`).join('')}</select>
+      <div id="cfields"></div>
+      <label class="chk" id="trust-wrap"><input type="checkbox" name="trust_cert"><span>Trust this server's certificate<br><small style="color:var(--t3)">Only for a database with its own (self-signed) certificate. Still encrypted; the server's identity is not checked.</small></span></label>
+      <div class="err" id="cerr"></div>
+      <div class="progress" id="cprog"></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px"><button type="button" class="btn" data-close>Cancel</button><button class="btn primary" id="cgo">Connect</button></div>
+    </form>`);
+  const sel = $('select', el), fields = $('#cfields', el);
+  const render = () => {
+    const t = sel.value, f = DBS[t];
+    fields.innerHTML = f.includes('db_path')
+      ? `<label class="lbl">File path</label><input class="in" name="db_path" placeholder="/data/app.db" required>`
+      : `<div class="two"><div><label class="lbl">Host</label><input class="in" name="host" placeholder="${t === 'MongoDB' ? 'db.example.com or mongodb+srv://cluster0.xxxx.mongodb.net' : 'db.example.com'}" required></div>
+         <div><label class="lbl">Port</label><input class="in" name="port" value="${PORTS[t] || ''}" placeholder="${t === 'MongoDB' ? 'blank for Atlas' : ''}"></div></div>
+         <div class="two"><div><label class="lbl">Username</label><input class="in" name="username" autocomplete="off"></div>
+         <div><label class="lbl">Password</label><div class="pw"><input class="in" name="password" type="password" id="cpw" autocomplete="new-password"><button type="button" data-eye="cpw" aria-label="Show password">👁</button></div></div></div>
+         <label class="lbl">${f.includes('keyspace') ? 'Keyspace' : 'Database'}</label><input class="in" name="${f.includes('keyspace') ? 'keyspace' : 'database'}" required>`;
+    $('#trust-wrap', el).classList.toggle('hidden', t === 'SQLite');
+  };
+  sel.onchange = render; render();
+  $('#cf', el).onsubmit = async e => {
+    e.preventDefault();
+    const body = Object.fromEntries(new FormData(e.target).entries()); body.trust_cert = !!$('[name=trust_cert]', el)?.checked;
+    const go = $('#cgo', el), prog = $('#cprog', el), err = $('#cerr', el); go.disabled = true; err.textContent = ''; prog.innerHTML = '';
+    let ok = false;
+    try {
+      await sse('/api/connect', body, ev => {
+        if (ev.error) { err.textContent = ev.error; return; }
+        if (ev.phase === 'done') { ok = true; S.tables = ev.tables || []; return; }
+        if (ev.msg) { const d = document.createElement('div'); d.textContent = ev.msg; if (/done|ready|found|loaded|detected/i.test(ev.phase + ev.msg)) d.classList.add('ok'); prog.appendChild(d); }
+      });
+    } catch (e2) { err.textContent = e2.message; }
+    go.disabled = false;
+    if (ok) { close(); await loadConnections(); S.session = null; renderSessions(); renderHero(); toast(`Connected · ${S.active?.label || ''}`); }
+  };
+  setTimeout(() => $('input', fields)?.focus(), 50);
+}
+$('#add-db').onclick = () => { openConnect(); document.body.classList.remove('side-open'); };
+
+function openUnlock(locked, question) {
+  const { el, close } = modal('Unlock ' + locked.label, `
+    <p style="color:var(--t2);margin:6px 0 0">This database has not been used for a while. Enter its password to continue; it is checked by logging in and never stored.</p>
+    <form id="uf"><label class="lbl">Password</label>
+      <div class="pw"><input class="in" name="password" id="upw" type="password" autocomplete="current-password" required><button type="button" data-eye="upw" aria-label="Show password">👁</button></div>
+      <div class="err" id="uerr"></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px"><button type="button" class="btn" data-close>Cancel</button><button class="btn primary">Unlock</button></div></form>`);
+  $('#uf', el).onsubmit = async e => {
+    e.preventDefault();
+    try {
+      await j(`/api/connections/${encodeURIComponent(locked.id)}/unlock`, { method: 'POST', json: { password: $('#upw', el).value } });
+      close(); toast('Unlocked');
+      if (question) { qbox.value = question; $('#ask').requestSubmit(); }
+    } catch (err) { $('#uerr', el).textContent = err.message; }
+  };
+  setTimeout(() => $('#upw', el).focus(), 50);
+}
+
+async function openMcp() {
+  const { el } = modal('Connect Claude Code', `<p style="color:var(--t2);margin:6px 0 0">A personal token lets Claude Code or Cursor use SQL-Agent as an MCP server, with your access and your audit trail.</p><div id="mcpbody" style="margin-top:12px"><div class="empty">Loading…</div></div>`);
+  const body = $('#mcpbody', el);
+  const render = async d => {
+    const url = location.origin.replace(/:\d+$/, '') + ':8765/mcp';
+    body.innerHTML = `${d.has_token ? `<div class="kv"><b>Token</b><span>${esc(d.prefix)} · created ${esc(d.created)}</span></div>` : `<div class="empty">No token yet.</div>`}
+      ${d.token ? `<p style="margin:12px 0 4px;color:var(--warn);font-size:13px">Copy it now — it is shown only once.</p><code class="tok">claude mcp add --transport http sql-agent ${esc(url)} --header "Authorization: Bearer ${esc(d.token)}"</code>` : ''}
+      <div style="display:flex;gap:10px;margin-top:14px"><button class="btn primary" id="mk">${d.has_token ? 'Replace token' : 'Create token'}</button>${d.has_token ? `<button class="btn danger" id="rm">Revoke</button>` : ''}</div>`;
+    $('#mk', body).onclick = async () => render(await j('/api/mcp-token', { method: 'POST' }));
+    const rm = $('#rm', body); if (rm) rm.onclick = async () => { await j('/api/mcp-token', { method: 'DELETE' }); render(await j('/api/mcp-token')); };
+  };
+  try { render(await j('/api/mcp-token')); } catch (err) { body.innerHTML = `<div class="notice">${esc(err.message)}</div>`; }
+}
+$('#open-mcp').onclick = () => { openMcp(); document.body.classList.remove('side-open'); };
+
+async function openAi() {
+  const { el, close } = modal('Your AI model', `<div id="aibody"><div class="empty">Loading…</div></div>`);
+  const body = $('#aibody', el);
+  try {
+    const d = await j('/api/llm');
+    body.innerHTML = `<p style="color:var(--t2);margin:6px 0 0">${d.source === 'yours' ? `Using your ${esc(d.provider)} key (${esc(d.model || 'default model')}).` : d.source === 'server' ? `Using the server's model (${esc(d.server_model)}). Add your own key to use a different provider.` : 'No AI model is set. Add a key to ask questions in plain language.'}</p>
+      <form id="aif"><label class="lbl">Provider</label><select class="in" name="provider">${d.providers.map(p => `<option value="${esc(p.id)}" ${p.id === d.provider ? 'selected' : ''}>${esc(p.label)}</option>`).join('')}${d.can_custom ? '<option value="custom">Custom (OpenAI-compatible)</option>' : ''}</select>
+      <label class="lbl">API key</label><div class="pw"><input class="in" name="api_key" id="aik" type="password" placeholder="${d.has_key ? 'leave blank to keep the current key' : 'paste your key'}"><button type="button" data-eye="aik" aria-label="Show key">👁</button></div>
+      <label class="lbl">Model <span style="color:var(--t3);text-transform:none;font-weight:400">(optional)</span></label><input class="in" name="model" value="${esc(d.model || '')}" placeholder="provider default">
+      <div id="custom-url" class="${d.provider === 'custom' ? '' : 'hidden'}"><label class="lbl">Base URL</label><input class="in" name="base_url" value="${esc(d.base_url || '')}" placeholder="https://host/v1"></div>
+      <div class="err" id="aierr"></div>
+      <div style="display:flex;gap:10px;justify-content:space-between;margin-top:16px"><button type="button" class="btn danger" id="ai-rm" ${d.source === 'yours' ? '' : 'disabled'}>Remove my key</button><div style="display:flex;gap:10px"><button type="button" class="btn" id="ai-test">Test</button><button class="btn primary">Save</button></div></div></form>`;
+    const f = $('#aif', body), sel = $('[name=provider]', f);
+    sel.onchange = () => $('#custom-url', f).classList.toggle('hidden', sel.value !== 'custom');
+    const payload = () => Object.fromEntries(new FormData(f).entries());
+    f.onsubmit = async e => { e.preventDefault(); try { await j('/api/llm', { method: 'PUT', json: payload() }); toast('AI settings saved'); close(); } catch (err) { $('#aierr', f).textContent = err.message; } };
+    $('#ai-test', f).onclick = async () => { $('#aierr', f).textContent = ''; try { const r = await j('/api/llm/test', { method: 'POST', json: payload() }); toast(r.ok === false ? (r.message || 'Test failed') : 'Key and model work'); } catch (err) { $('#aierr', f).textContent = err.message; } };
+    $('#ai-rm', f).onclick = async () => { try { await j('/api/llm', { method: 'DELETE' }); toast('Your key was removed'); close(); } catch (err) { $('#aierr', f).textContent = err.message; } };
+  } catch (err) { body.innerHTML = `<div class="notice">${esc(err.message)}</div>`; }
+}
+$('#open-ai').onclick = () => { openAi(); document.body.classList.remove('side-open'); };
+
+boot();
+</script>
+</body>
+</html>

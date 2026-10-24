@@ -8,6 +8,9 @@ Fixes:
 """
 
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 import httpx
 from jose import jwt
@@ -58,20 +61,42 @@ def _find_rsa_key(token: str) -> dict:
     raise ValueError("No matching public key found in JWKS — check AUTH0_DOMAIN.")
 
 
+def _active_policy():
+    import sys
+    app_mod = sys.modules.get("sql_agent.app")
+    if app_mod and hasattr(app_mod, "POLICY"):
+        return app_mod.POLICY
+    from .rbac import POLICY
+    return POLICY
+
+
 def verify_token(token: str) -> str:
     """
-    Verify a Bearer JWT and return the user_id (sub claim).
-
-    In DEV_MODE the token value itself is used as the user_id so you can
-    test locally without a real Auth0 tenant:
-        curl -H "Authorization: Bearer dev-user-123" ...
+    Verify a Bearer token and return the user_id:
+      1. Built-in account session token (`ses_...`) or MCP token (`mcp_...`)
+      2. Auth0 RS256 JWT (when configured)
+      3. DEV_MODE fallback for non-account test identities
     """
+    policy = _active_policy()
+    if token.startswith("ses_"):
+        who = policy.user_for_session_token(token)
+        if not who:
+            raise ValueError("Session expired or invalid. Please sign in again.")
+        return who
+    if token.startswith("mcp_"):
+        # An MCP token is for the MCP server only (it checks it itself). Accepting it here would make a
+        # 30-day AI-client token a web session that can mint fresh tokens and never effectively expires.
+        raise ValueError("MCP tokens cannot be used for the web app. Sign in with your account.")
+    # Never allow raw username impersonation of a password-protected account
+    if policy.has_account(token):
+        raise ValueError("Password sign-in is required for this account.")
+
     if DEV_MODE:
         return token
 
     if not AUTH0_DOMAIN or not AUTH0_AUDIENCE:
         raise RuntimeError(
-            "AUTH0_DOMAIN and AUTH0_AUDIENCE must be set (or enable DEV_MODE=true)."
+            "Please sign in with your account and password."
         )
 
     rsa_key = _find_rsa_key(token)
