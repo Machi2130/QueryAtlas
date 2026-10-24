@@ -92,7 +92,8 @@ class DocStore:
     """Per-user unstructured document store backed by ChromaDB + BM25 hybrid search."""
 
     def __init__(self, user_id: str, persist_dir: str = ".chroma_data"):
-        path = os.path.join(persist_dir, user_id)
+        from .connections import safe_owner   # a folder name that cannot leave persist_dir or collide
+        path = os.path.join(persist_dir, safe_owner(user_id))
         self._client = chromadb.PersistentClient(path=path)
         self._col = self._client.get_or_create_collection(
             name="unstructured",
