@@ -1,8 +1,16 @@
 # SQL-Agent — ask your database questions from Claude Code
 
-[![tests](https://github.com/Machi2130/SQL-Agent/actions/workflows/tests.yml/badge.svg)](https://github.com/Machi2130/SQL-Agent/actions/workflows/tests.yml)
 ![python](https://img.shields.io/badge/python-3.12-blue)
 ![stack](https://img.shields.io/badge/MCP%20%C2%B7%20FastAPI%20%C2%B7%20SQLAlchemy%20%C2%B7%20ChromaDB%20%C2%B7%20Docker-informational)
+
+<p align="center">
+  <img src="docs/architecture.svg" width="100%"
+       alt="SQL-Agent: questions from developers (MCP) and teams (web app) pass four rings before reaching the databases — sign-in and roles, the read-only validator, the tenant filter and encrypted connections. The AI model and the knowledge layer help write each query, every request is audited, and an unsafe query is stopped at the validator.">
+</p>
+<p align="center">
+  <img src="docs/how-it-works.svg" width="100%"
+       alt="Inside SQL-Agent: a question typed in the chat becomes a glowing packet that travels through the engine. The access check confirms who is asking and their role; the router binds the chat to one of several open databases; the knowledge vault is scanned and 40 tables shrink to the 2 that matter, with a data-confirmed join, a glossary note and value hints; the query is written by SQL-Agent's AI or by Claude; the validator seals it (read-only, no credential columns, tenant filter attached, row cap and time limit); it runs through an encrypted tunnel with a database-enforced countdown; rows return as a table, a chart and a one-line summary; and once confirmed, the verified example flows back into the vault for next time. The audit tape records each step and a subtitle narrates.">
+</p>
 
 An MCP server that gives an AI assistant (Claude Code, Claude Desktop, Cursor) a
 **governed, knowledge-backed connection** to databases: it learns each database once,
@@ -25,8 +33,10 @@ moment they touch a real database:
   credential, no record of who ran what, no separation between users.
 
 SQL-Agent addresses each one. A per-database **knowledge layer** (real foreign keys,
-schema embeddings, a human glossary, remembered question→SQL pairs) reduces the context a
-question needs by about 10× and removes join guessing. A **validation layer** enforces
+schema embeddings, a human glossary, remembered question→SQL pairs) sends the model only
+what a question needs — about 700 tokens whatever the schema size, measured at 67% less
+than the full schema on a 42-table database, 89% less at 120 tables and 97% less at 300 —
+and removes join guessing. A **validation layer** enforces
 read-only SQL, a row cap and a mandatory tenant filter, and routes any data change through
 a human confirmation step. A **governance layer** provides per-user tokens, isolated
 knowledge per user, and an audit line for every statement. The result is a database
@@ -61,17 +71,27 @@ flowchart LR
    ```
    cp .env.example .env
    ```
-   Fill in `GROQ_API_KEY` (your own key — needed for natural-language questions)
+   Fill in `GROQ_API_KEY` (your own key — needed only when the server writes the SQL:
+   `query_database` and the web app; any OpenAI-compatible API works via `LLM_BASE_URL` /
+   `LLM_MODEL`, including a local Ollama)
    and, optionally, `MCP_DB_PASSWORD` so the database password is not entered on every
    connection (or one per database, `MCP_DB_PASSWORD_<DBNAME>`, when several servers are used).
    Everything else can stay as is. **Never commit `.env`.**
-5. Register the server with Claude Code (use the absolute path to `mcp_server.py`;
-   on macOS use `python3`):
+5. Register the server with Claude Code:
    ```
-   claude mcp add sql-agent -s user -e PYTHONUTF8=1 -e MCP_USER_ID=<your-name> -- python /full/path/to/SQL-Agent/mcp_server.py
+   python mcp_server.py --install            # optional: --user <your-name>
    ```
-   Check it: `claude mcp list` should show `sql-agent … ✔ Connected`.
+   This registers stdio mode with this exact Python and the absolute path (replacing any earlier
+   `sql-agent` entry), so Claude Code starts the server itself — nothing to keep running.
+   Restart Claude Code and check: `claude mcp list` should show `sql-agent … ✔ Connected`.
    The first start downloads an ~80 MB embedding model.
+
+   **If it doesn't connect:**
+   - `ECONNREFUSED` — Claude Code is registered for HTTP (`http://…/mcp`) but no server is running.
+     Run `python mcp_server.py --install` to switch to stdio, or start `python mcp_server.py --http …` first.
+   - `Connection closed` at startup — run `python mcp_server.py` in a terminal; the traceback shows the cause
+     (usually a missing package: `pip install -r requirements.txt`).
+   - Settings in `.env` are read from the project folder, wherever Claude Code is started.
 
 ## Use
 
@@ -87,10 +107,14 @@ server learns its schema (a minute or two on big schemas); later connects are in
 How a question is answered when Claude is the client: on connect the server builds a
 knowledge graph of the database (table/column embeddings + relationships, no LLM).
 `get_query_context(question)` then returns just the relevant tables, their join paths,
-business notes and similar past queries — a few hundred tokens instead of the whole
-schema — Claude writes the SELECT, and `run_sql` executes it and remembers the
-question→SQL pair. Groq is only used by `query_database` (the web app / clients
-without a strong model).
+business notes and similar past queries — about 700 tokens instead of the whole schema;
+every result carries its own `context_tokens` measure, and `describe_capabilities` shows the
+running `context_savings` — Claude writes the SELECT, and `run_sql` executes it and remembers the
+question→SQL pair as *unverified*. When you confirm or correct an answer, `mark_query`
+makes it a verified example (shown first next time) or deletes it; a wrong query is never
+re-suggested just because it ran. Groq is only used by `query_database` (the web app /
+clients without a strong model). If a question names nothing in the database,
+`get_query_context` returns `low_confidence: true` and Claude asks instead of guessing.
 
 Join paths come from the database's real foreign keys when it has them (read once per
 connect), with name-based inference only filling gaps.
@@ -104,8 +128,9 @@ about "card" and that table comes in). `list_notes` / `delete_note` to manage th
 **One database, many clients.** If the schema shares a column across most tables
 (`Tenant_Id`, `Client_Id`…), `connect_database` reports it as a *scope candidate*. Set it
 once per connection — `set_scope(column="Tenant_Id", value="7", label="Acme Retail")` — and
-every query on those tables must filter on it or it is rejected with the exact clause to add,
-so clients' data is never mixed by accident. Empty value clears it.
+the server rewrites every reference to those tables (joins, subqueries, CTEs) to
+`(SELECT * FROM t WHERE Tenant_Id = '7')`, so no query shape can reach another client's
+rows. Empty value clears it.
 
 **It learns what matters.** `import_query_history` reads the database's own execution
 statistics (which tables the application and team query most) and `import_queries` ingests
@@ -114,13 +139,13 @@ the SQL people already have; `run_sql` keeps counting. Popular tables rank first
 
 Tools: `connect_database`, `get_query_context`, `get_schema`, `run_sql` (SELECT/WITH
 only — INSERT/UPDATE/DELETE/DDL are rejected), `execute_write` (developer mode),
-`add_note` / `list_notes` / `delete_note`, `query_database` (Groq writes the SQL),
+`add_note` / `list_notes` / `delete_note`, `mark_query`, `query_database` (Groq writes the SQL),
 `explain_query`, `suggest_chart`, `upload_document` / `search_documents`, `disconnect`.
 
 ## Safety: read-only by default, developer mode on request
 
-- `run_sql` / `query_database` are strictly read-only (SELECT/WITH only, one statement, no
-  `SELECT INTO`, blocked keywords), capped at `MCP_MAX_ROWS` rows (default 5 000; the result says
+- `run_sql` / `query_database` are strictly read-only (parsed per dialect: one SELECT/UNION
+  statement, no data-changing node anywhere, no `SELECT INTO`, every table checked, blocked keywords), capped at `MCP_MAX_ROWS` rows (default 5 000; the result says
   `truncated: true` when there was more). For real protection use a **read-only database login**
   (`db_datareader`) for the server — the SQL guard is the second line, not the first. SQL Server:
   ```sql
@@ -131,10 +156,15 @@ only — INSERT/UPDATE/DELETE/DDL are rejected), `execute_write` (developer mode
   ```
   Repeat the `USE … CREATE USER … ALTER ROLE` block per database the agent should read.
 - Developers who need to change data use **`execute_write`**: the server must set
-  `MCP_ALLOW_WRITES=true`, the connection must be opened with `allow_writes=true` (using the
-  developer's own write-capable credentials), every statement is shown to the user in a
-  confirmation form, `UPDATE`/`DELETE` need a `WHERE`, and DDL needs `MCP_ALLOW_DDL=true`.
-  `dry_run=true` executes inside a transaction, reports rows affected, and rolls back — use it first.
+  writes on in the **Settings → Database writes** panel, the user's role must include
+  `sql.write`, and the connection must be explicitly opened with `allow_writes=true` (using
+  the developer's own write-capable credentials). Each statement is shown to the user in a
+  confirmation form, `UPDATE`/`DELETE` need a `WHERE`, and DDL must be separately enabled
+  in Settings. Changes to roles and write settings apply without a server restart; connected
+  MCP clients are notified when their tool list should refresh. `dry_run=true` executes
+  inside a transaction, reports rows affected, and rolls back — use it first.
+  `MCP_ALLOW_WRITES` and `MCP_ALLOW_DDL` are first-run defaults for the settings file, not a
+  replacement for the Settings UI, role permission, or per-connection opt-in.
 - Every query and write is appended to `audit.log` (JSON lines: who, connection, SQL, rows,
   duration, outcome). Give each person their own token (`MCP_AUTH_TOKENS`) so "who" is a name.
 
@@ -174,6 +204,23 @@ form (or set `MCP_DB_PASSWORD_<DB>` on the host if everyone should use one accou
 the server behind HTTPS (any reverse proxy) if it's reachable beyond your VPN, and remove
 a person's token line to revoke access.
 
+**How database credentials are protected when hosted** (`--http`, and the web app always):
+- **Only through the form.** Passwords, LLM keys and "trust this certificate" are taken only from the
+  connection form, never from tool arguments, so a password typed into the chat is not used (it would
+  have passed through the LLM provider).
+- **Always encrypted, certificate checked.** PostgreSQL `verify-full`, MySQL/MariaDB TLS with CA check
+  (the login is refused if the server offers no TLS), SQL Server `TrustServerCertificate=no`, MongoDB and
+  Cassandra TLS. A database with a self-signed certificate needs *Trust this server's certificate* ticked
+  in the form (still encrypted; recorded in `audit.log`).
+- **No internal networks.** A host that resolves to a private, loopback, link-local (cloud metadata) or
+  reserved address is refused. List your own internal databases in `MCP_ALLOWED_HOSTS` to allow them;
+  the server's `MCP_DB_PASSWORD*` are only ever used for those listed hosts. SQLite only inside `MCP_SQLITE_DIR`.
+- **Never stored, never shown.** Passwords stay in memory for the open connection only (not in Redis,
+  files, logs or knowledge), and connection errors are fixed sentences, never the driver's text.
+- **For the customer's IT team:** create a dedicated **read-only** database login for SQL-Agent
+  (see *Safety* above). Sign-ups get the `customer` role (connect and read); writes need an admin to grant
+  `sql.write`, a connection opened with *Allow data edits*, and a typed YES for every statement.
+
 ## Repository layout
 
 ```
@@ -186,14 +233,12 @@ sql_agent/
   docstore.py            uploaded documents (chunk, embed, hybrid search)
   cache.py               sessions and caches (Redis, in-memory fallback)
   storage.py, auth.py    persistence and auth helpers
-tests/                   pytest suites (run on every push)
 docs/                    ARCHITECTURE.md · SECURITY.md · EXAMPLES.md
 Dockerfile               hosted deployment
 ```
 
 Design: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · threat model and guards:
 [`docs/SECURITY.md`](docs/SECURITY.md) · real sessions: [`docs/EXAMPLES.md`](docs/EXAMPLES.md).
-Tests: `python -m pytest tests -q`.
 
 ## Notes
 

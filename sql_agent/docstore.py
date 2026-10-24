@@ -54,17 +54,38 @@ def extract_text(filename: str, data: bytes) -> str:
     return data.decode("utf-8", errors="replace")
 
 
-def fetch_url(url: str) -> str:
-    resp = httpx.get(url, follow_redirects=True, timeout=15)
-    resp.raise_for_status()
-    content_type = resp.headers.get("content-type", "")
-    if "pdf" in content_type:
-        return _extract_pdf(resp.content)
-    # Strip HTML tags for web pages
-    import re
-    text = re.sub(r"<[^>]+>", " ", resp.text)
-    text = re.sub(r"\s+", " ", text)
-    return text
+MAX_FETCH_BYTES = 10 * 1024 * 1024   # a page or PDF larger than this is refused, never held in memory
+_MAX_REDIRECTS = 3
+
+
+def fetch_url(url: str, hosted: bool = False) -> str:
+    """Fetch a web page or PDF as text. Hosted: only public addresses, checked again on every redirect
+    (a public page may redirect to an internal one), so a caller cannot read the server's own network."""
+    from urllib.parse import urljoin, urlsplit
+
+    from .connections import allowed_hosts, public_address
+    for _ in range(_MAX_REDIRECTS + 1):
+        parts = urlsplit(url)
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            raise ValueError("Only http:// and https:// web addresses can be added.")
+        if hosted and parts.hostname.lower() not in allowed_hosts():
+            public_address(parts.hostname)
+        with httpx.stream("GET", url, follow_redirects=False, timeout=15) as resp:
+            if resp.is_redirect:
+                url = urljoin(url, resp.headers.get("location", ""))
+                continue
+            resp.raise_for_status()
+            body = bytearray()
+            for chunk in resp.iter_bytes():   # counted as it arrives: a missing or false length does not matter
+                body += chunk
+                if len(body) > MAX_FETCH_BYTES:
+                    raise ValueError(f"The page is larger than {MAX_FETCH_BYTES // (1024 * 1024)} MB.")
+            if "pdf" in resp.headers.get("content-type", ""):
+                return _extract_pdf(bytes(body))
+            import re
+            text = re.sub(r"<[^>]+>", " ", body.decode(resp.encoding or "utf-8", errors="replace"))
+            return re.sub(r"\s+", " ", text)
+    raise ValueError("The address redirects too many times.")
 
 
 class DocStore:
@@ -119,8 +140,8 @@ class DocStore:
         self._upsert(ids, docs, metas)
         return len(chunks)
 
-    def add_url(self, url: str) -> int:
-        text   = fetch_url(url)
+    def add_url(self, url: str, hosted: bool = False) -> int:
+        text   = fetch_url(url, hosted)
         chunks = _chunk(text)
         if not chunks:
             return 0
