@@ -17,41 +17,43 @@ import secrets
 import threading
 import time
 
+from .config import settings
+
 # ── permissions the code checks (the vocabulary of the settings file) ──
-ASK            = "ask"               # ask questions, see answers / charts / tables
-FEEDBACK       = "feedback"          # 👍/👎: without APPROVE it is only a suggestion
-APPROVE        = "feedback.approve"  # a 👍 makes the answer verified (reused with no AI call)
-VIEW_SQL       = "view.sql"          # SQL, tables used and technical errors in answers
-VIEW_TABLES    = "view.tables"       # the Data tables sidebar (raw schema)
-CONNECT        = "connect"           # open a database by typing its connection details
-NOTES          = "notes.manage"      # glossary notes
-SCOPE          = "scope.manage"      # tenant scope (MCP set_scope)
-EXPLAIN        = "sql.explain"       # explain_query / validate_sql
-WRITE          = "sql.write"         # execute_write (still also needs MCP_ALLOW_WRITES)
-MCP            = "mcp.use"           # use the MCP tools at all
-SETTINGS       = "settings.manage"   # edit this file from the Settings page
+ASK = "ask"  # ask questions, see answers / charts / tables
+FEEDBACK = "feedback"  # 👍/👎: without APPROVE it is only a suggestion
+APPROVE = "feedback.approve"  # a 👍 makes the answer verified (reused with no AI call)
+VIEW_SQL = "view.sql"  # SQL, tables used and technical errors in answers
+VIEW_TABLES = "view.tables"  # the Data tables sidebar (raw schema)
+CONNECT = "connect"  # open a database by typing its connection details
+NOTES = "notes.manage"  # glossary notes
+SCOPE = "scope.manage"  # tenant scope (MCP set_scope)
+EXPLAIN = "sql.explain"  # explain_query / validate_sql
+WRITE = "sql.write"  # execute_write (still also needs MCP_ALLOW_WRITES)
+MCP = "mcp.use"  # use the MCP tools at all
+SETTINGS = "settings.manage"  # edit this file from the Settings page
 
 ALL_PERMISSIONS = [ASK, FEEDBACK, APPROVE, VIEW_SQL, VIEW_TABLES, CONNECT, NOTES, SCOPE, EXPLAIN, WRITE, MCP, SETTINGS]
 SQL_GENERATOR_MODES = ("auto", "server", "client")
 
 DEFAULT_SETTINGS = {
-    "default_role": "user",          # anyone not listed under "users"
-    "mcp_local_role": "dev",         # MCP over stdio runs on the person's own machine
+    "default_role": "user",  # anyone not listed under "users"
+    "mcp_local_role": "dev",  # MCP over stdio runs on the person's own machine
     # a password-opened database unused this long asks for the password again (0 = never)
-    "idle_lock_minutes": float(os.getenv("IDLE_LOCK_MINUTES", 30)),
+    "idle_lock_minutes": settings.idle_lock_minutes,
     # who generates SQL in MCP: "auto" (server if LLM key set, else client), "server" (1 round-trip), "client" (MCP host LLM)
-    "sql_generator": (os.getenv("SQL_GENERATOR_MODE", "auto").strip().lower() or "auto"),
-    "mcp_allow_writes": os.getenv("MCP_ALLOW_WRITES", "").lower() in ("1", "true", "yes"),
-    "mcp_allow_ddl": os.getenv("MCP_ALLOW_DDL", "").lower() in ("1", "true", "yes"),
+    "sql_generator": settings.sql_generator_mode,
+    "mcp_allow_writes": settings.allow_writes,
+    "mcp_allow_ddl": settings.allow_ddl,
     "roles": {
-        "user":  [ASK, FEEDBACK, CONNECT],
+        "user": [ASK, FEEDBACK, CONNECT],
         "admin": [ASK, FEEDBACK, APPROVE, VIEW_SQL, VIEW_TABLES, CONNECT, NOTES, SCOPE, MCP, SETTINGS],
-        "dev":   [ASK, FEEDBACK, APPROVE, VIEW_SQL, VIEW_TABLES, CONNECT, NOTES, SCOPE, EXPLAIN, WRITE, MCP],
+        "dev": [ASK, FEEDBACK, APPROVE, VIEW_SQL, VIEW_TABLES, CONNECT, NOTES, SCOPE, EXPLAIN, WRITE, MCP],
     },
-    "users": {},                     # identity -> role, e.g. {"alice": "admin", "auth0|abc": "dev"}
-    "mcp_tokens": {},                # identity -> {"hash": sha256_hex, "prefix": "mcp_...", "created": iso}
-    "accounts": {},                  # identity -> {"salt": hex, "hash": scrypt_hex, "created": iso}
-    "web_sessions": {},              # sha256(ses_token) -> {"user": identity, "created": epoch}
+    "users": {},  # identity -> role, e.g. {"alice": "admin", "auth0|abc": "dev"}
+    "mcp_tokens": {},  # identity -> {"hash": sha256_hex, "prefix": "mcp_...", "created": iso}
+    "accounts": {},  # identity -> {"salt": hex, "hash": scrypt_hex, "created": iso}
+    "web_sessions": {},  # sha256(ses_token) -> {"user": identity, "created": epoch}
 }
 
 
@@ -91,14 +93,8 @@ def validate_settings(doc: dict) -> dict:
     for key in ("mcp_allow_writes", "mcp_allow_ddl"):
         if key in doc and not isinstance(doc[key], bool):
             raise SettingsError(f"'{key}' must be true or false.")
-    doc.setdefault(
-        "mcp_allow_writes",
-        os.getenv("MCP_ALLOW_WRITES", "").lower() in ("1", "true", "yes"),
-    )
-    doc.setdefault(
-        "mcp_allow_ddl",
-        os.getenv("MCP_ALLOW_DDL", "").lower() in ("1", "true", "yes"),
-    )
+    doc.setdefault("mcp_allow_writes", settings.allow_writes)
+    doc.setdefault("mcp_allow_ddl", settings.allow_ddl)
     doc.setdefault("mcp_tokens", {})
     doc.setdefault("accounts", {})
     doc.setdefault("web_sessions", {})
@@ -136,11 +132,14 @@ def _scrypt_digest(password: str, salt: bytes) -> str:
 def _atomic(method):
     """The whole read-modify-write of the settings file under the write lock, so a concurrent
     sign-up cannot restore a token that a revoke just removed."""
+
     def wrapper(self, *args, **kwargs):
         with self._write_lock:
             return method(self, *args, **kwargs)
+
     wrapper.__name__, wrapper.__doc__ = method.__name__, method.__doc__
     return wrapper
+
 
 class Policy:
     """The settings file, cached and re-read whenever it changes on disk."""
@@ -150,7 +149,7 @@ class Policy:
         self._doc: dict = {}
         self._mtime: tuple[int, int] | None = None
         self._lock = threading.Lock()
-        self._write_lock = threading.RLock()   # one read-modify-write of the file at a time
+        self._write_lock = threading.RLock()  # one read-modify-write of the file at a time
 
     def _load(self) -> dict:
         try:
@@ -197,7 +196,7 @@ class Policy:
 
     def role_of(self, identity: str, mcp_local: bool = False) -> str:
         doc = self._load()
-        if identity in BOOTSTRAP_ADMINS:   # .env: whoever installs it can always reach Settings
+        if identity in BOOTSTRAP_ADMINS:  # .env: whoever installs it can always reach Settings
             return next(r for r, perms in doc["roles"].items() if SETTINGS in perms)
         if identity in (doc.get("users") or {}):
             return doc["users"][identity]
@@ -309,7 +308,7 @@ class Policy:
         try:
             salt = bytes.fromhex(entry["salt"])
             computed = _scrypt_digest(password, salt)
-        except Exception:
+        except (KeyError, ValueError):  # a corrupt account entry can never verify
             return False
         return hmac.compare_digest(computed, entry.get("hash", ""))
 
@@ -333,7 +332,7 @@ class Policy:
         digest = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
         entry = (self._load().get("web_sessions") or {}).get(digest)
         if not entry or time.time() - int(entry.get("created", 0)) > WEB_SESSION_SECONDS:
-            return None   # expired sessions stop working at once, not when someone next signs in
+            return None  # expired sessions stop working at once, not when someone next signs in
         return entry.get("user")
 
     @_atomic
@@ -348,8 +347,8 @@ class Policy:
 
 # People who always get a settings-managing role, whatever the file says: the first admin
 # of a fresh install, and the way back in if someone locks themselves out.
-WEB_SESSION_SECONDS = 12 * 3600       # web sign-in lasts 12 hours
-MCP_TOKEN_SECONDS = 30 * 86400        # MCP tokens 30 days (the OAuth expires_in); revocable any time
+WEB_SESSION_SECONDS = 12 * 3600  # web sign-in lasts 12 hours
+MCP_TOKEN_SECONDS = 30 * 86400  # MCP tokens 30 days (the OAuth expires_in); revocable any time
 
 
 def _age_seconds(created: str) -> float:
@@ -360,19 +359,19 @@ def _age_seconds(created: str) -> float:
         return float("inf")
 
 
-SIGNUP_ROLE = "customer"   # self-signed-up accounts: their own databases, read-only
+SIGNUP_ROLE = "customer"  # self-signed-up accounts: their own databases, read-only
 SIGNUP_PERMISSIONS = [ASK, FEEDBACK, APPROVE, VIEW_SQL, VIEW_TABLES, CONNECT, NOTES, SCOPE, EXPLAIN, MCP]
-BOOTSTRAP_ADMINS = {a.strip() for a in os.getenv("RBAC_ADMINS", "").split(",") if a.strip()}
+BOOTSTRAP_ADMINS = settings.bootstrap_admins
 
 
 def _reserved_identities() -> set[str]:
     """Identities that already belong to someone without an account: .env token holders (the
     shared MCP_AUTH_TOKEN is 'default'), the local MCP user and the unknown-token fallback. An
     account with the same name would become that identity and see its connections and knowledge."""
-    token_names = {p.partition(":")[0].strip() for p in os.getenv("MCP_AUTH_TOKENS", "").split(",") if ":" in p}
-    return token_names | {os.getenv("MCP_USER_ID", "mcp-agent"), "default", "unknown-token"}
+    return set(settings.mcp_token_users.values()) | {settings.mcp_user_id, "default", "unknown-token"}
 
-POLICY = Policy(os.getenv("RBAC_FILE", os.path.join("config", "rbac.json")))
+
+POLICY = Policy(settings.rbac_file)
 
 
 def _create_account_cli(argv: list[str]) -> None:
@@ -397,6 +396,6 @@ if __name__ == "__main__":
     # (the module-level values above were read before it was loaded).
     os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     load_dotenv(".env")
-    BOOTSTRAP_ADMINS = {a.strip() for a in os.getenv("RBAC_ADMINS", "").split(",") if a.strip()}
-    POLICY = Policy(os.getenv("RBAC_FILE", os.path.join("config", "rbac.json")))
+    BOOTSTRAP_ADMINS = settings.bootstrap_admins
+    POLICY = Policy(settings.rbac_file)
     _create_account_cli(sys.argv[1:])

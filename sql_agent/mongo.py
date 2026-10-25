@@ -10,21 +10,41 @@ and the tenant filter applied by the server.
 
 from __future__ import annotations
 
+import logging
 import re
-import sys
 from typing import Any
 
 from .database import serialize_value
 from .validation import QueryValidationError, is_sensitive
 
-SAMPLE_DOCS = 200          # documents sampled per collection to learn its fields
+log = logging.getLogger(__name__)
+
+SAMPLE_DOCS = 200  # documents sampled per collection to learn its fields
 DEFAULT_LIMIT = 50
 
 _BLOCKED_OPERATORS = {"$where", "$function", "$accumulator", "$objectToArray", "$getField", "$setField"}
 _WHOLE_DOCUMENT = {"$$ROOT", "$$CURRENT"}
-READ_STAGES = {"$match", "$project", "$addFields", "$set", "$unset", "$group", "$sort", "$limit", "$skip",
-               "$count", "$unwind", "$lookup", "$facet", "$bucket", "$bucketAuto", "$sortByCount",
-               "$replaceRoot", "$replaceWith", "$unionWith"}
+READ_STAGES = {
+    "$match",
+    "$project",
+    "$addFields",
+    "$set",
+    "$unset",
+    "$group",
+    "$sort",
+    "$limit",
+    "$skip",
+    "$count",
+    "$unwind",
+    "$lookup",
+    "$facet",
+    "$bucket",
+    "$bucketAuto",
+    "$sortByCount",
+    "$replaceRoot",
+    "$replaceWith",
+    "$unionWith",
+}
 _FIND_KEYS = {"collection", "filter", "projection", "sort", "skip", "limit"}
 
 
@@ -43,7 +63,7 @@ def _type_name(value: Any) -> str:
         return "array"
     if value is None:
         return "null"
-    return type(value).__name__.lower()   # datetime, objectid, decimal128 ...
+    return type(value).__name__.lower()  # datetime, objectid, decimal128 ...
 
 
 def _sensitive_path(path: str) -> bool:
@@ -81,6 +101,7 @@ def sample_schema(db, sample: int = SAMPLE_DOCS, timeout_seconds: int = 30) -> d
 
 # ── Validation ────────────────────────────────────────────────
 
+
 def _check(node: Any) -> None:
     """Walk filters, projections, sorts and pipeline stages at any depth."""
     if isinstance(node, dict):
@@ -108,14 +129,14 @@ def _check_pipeline(pipeline: Any, schema: dict) -> None:
         raise QueryValidationError("'pipeline' must be a list of stages.")
     for stage in pipeline:
         if not isinstance(stage, dict) or len(stage) != 1:
-            raise QueryValidationError("Each pipeline stage must be an object with one key, e.g. {\"$match\": {...}}.")
+            raise QueryValidationError('Each pipeline stage must be an object with one key, e.g. {"$match": {...}}.')
         name, body = next(iter(stage.items()))
         if name not in READ_STAGES:
             raise QueryValidationError(f"Stage '{name}' is not allowed (read-only).")
         if name == "$lookup":
             if body.get("from") not in schema:
                 raise QueryValidationError(f"$lookup from '{body.get('from')}': not a collection of this database.")
-            for key in ("localField", "foreignField"):   # field names without a '$'
+            for key in ("localField", "foreignField"):  # field names without a '$'
                 if _sensitive_path(str(body.get(key, ""))):
                     raise QueryValidationError(f"Access to sensitive field '{body[key]}' is blocked.")
             if "pipeline" in body:
@@ -148,9 +169,14 @@ def validate(query: Any, schema: dict) -> dict:
     extra = set(query) - _FIND_KEYS
     if extra:
         raise QueryValidationError(f"Unknown keys {sorted(extra)}; a find takes {sorted(_FIND_KEYS)}.")
-    out = {"collection": coll, "filter": query.get("filter") or {}, "projection": query.get("projection") or None,
-           "sort": query.get("sort") or None, "skip": int(query.get("skip") or 0),
-           "limit": int(query.get("limit") or DEFAULT_LIMIT)}
+    out = {
+        "collection": coll,
+        "filter": query.get("filter") or {},
+        "projection": query.get("projection") or None,
+        "sort": query.get("sort") or None,
+        "skip": int(query.get("skip") or 0),
+        "limit": int(query.get("limit") or DEFAULT_LIMIT),
+    }
     for part in ("filter", "projection", "sort"):
         if out[part] is not None and not isinstance(out[part], dict):
             raise QueryValidationError(f"'{part}' must be a JSON object.")
@@ -174,11 +200,13 @@ def collections_in(query: dict) -> list[str]:
             elif name == "$facet":
                 for sub in body.values():
                     walk(sub)
+
     walk(query.get("pipeline"))
     return list(dict.fromkeys(found))
 
 
 # ── Tenant scope ──────────────────────────────────────────────
+
 
 def _tenant_match(scope: dict) -> dict:
     """Values are typed in MongoDB: '7' and 7 differ, so a numeric value matches either."""
@@ -195,11 +223,13 @@ def apply_scope(query: dict, scope: dict | None) -> tuple[dict, list[str]]:
     if not scope:
         return query, []
     scoped = {t.lower() for t in scope["tables"]}
-    def walk(pipeline, found):   # collections read by $lookup / $unionWith at any depth, the main one included
+
+    def walk(pipeline, found):  # collections read by $lookup / $unionWith at any depth, the main one included
         for stage in pipeline or []:
             name, body = next(iter(stage.items()))
             if name == "$lookup":
-                found.append(body["from"]); walk(body.get("pipeline"), found)
+                found.append(body["from"])
+                walk(body.get("pipeline"), found)
             elif name == "$unionWith":
                 found.append(body if isinstance(body, str) else body["coll"])
                 walk(body.get("pipeline") if isinstance(body, dict) else None, found)
@@ -207,10 +237,13 @@ def apply_scope(query: dict, scope: dict | None) -> tuple[dict, list[str]]:
                 for sub in body.values():
                     walk(sub, found)
         return found
+
     joined = sorted({c for c in walk(query.get("pipeline"), []) if c.lower() in scoped})
     if joined:
-        raise QueryValidationError(f"Reading {', '.join(joined)} through $lookup/$unionWith is not allowed "
-                                   f"while the tenant filter {scope['column']} is active; query it directly.")
+        raise QueryValidationError(
+            f"Reading {', '.join(joined)} through $lookup/$unionWith is not allowed "
+            f"while the tenant filter {scope['column']} is active; query it directly."
+        )
     if query["collection"].lower() not in scoped:
         return query, []
     match = _tenant_match(scope)
@@ -220,6 +253,7 @@ def apply_scope(query: dict, scope: dict | None) -> tuple[dict, list[str]]:
 
 
 # ── Execution ────────────────────────────────────────────────
+
 
 def _strip_sensitive(value: Any) -> Any:
     if isinstance(value, dict):
@@ -234,7 +268,7 @@ def run_read(db, query: dict, max_rows: int, timeout_seconds: int) -> tuple[list
     coll, ms = db[query["collection"]], timeout_seconds * 1000
     if "pipeline" in query:
         docs = list(coll.aggregate([*query["pipeline"], {"$limit": max_rows}], maxTimeMS=ms))
-        keep_id = True                                   # a $group's key is its _id
+        keep_id = True  # a $group's key is its _id
     else:
         cursor = coll.find(query["filter"], query["projection"], max_time_ms=ms)
         if query.get("sort"):
@@ -250,10 +284,30 @@ def run_read(db, query: dict, max_rows: int, timeout_seconds: int) -> tuple[list
 
 # ── Writes (developer mode; confirmed by a person, like SQL) ──
 
-WRITE_OPS = {"insertOne": "document", "insertMany": "documents", "updateOne": "update", "updateMany": "update",
-             "replaceOne": "replacement", "deleteOne": None, "deleteMany": None}
-_UPDATE_OPERATORS = {"$set", "$unset", "$inc", "$mul", "$rename", "$min", "$max", "$currentDate",
-                     "$push", "$pull", "$addToSet", "$pop", "$setOnInsert"}
+WRITE_OPS = {
+    "insertOne": "document",
+    "insertMany": "documents",
+    "updateOne": "update",
+    "updateMany": "update",
+    "replaceOne": "replacement",
+    "deleteOne": None,
+    "deleteMany": None,
+}
+_UPDATE_OPERATORS = {
+    "$set",
+    "$unset",
+    "$inc",
+    "$mul",
+    "$rename",
+    "$min",
+    "$max",
+    "$currentDate",
+    "$push",
+    "$pull",
+    "$addToSet",
+    "$pop",
+    "$setOnInsert",
+}
 MAX_INSERT = 1000
 
 
@@ -324,6 +378,7 @@ def run_write(db, parsed: dict, dry_run: bool, timeout_seconds: int) -> int:
     aborted (needs a replica set, as on Atlas). Returns documents inserted / modified / deleted."""
     import pymongo
     from pymongo.errors import OperationFailure
+
     coll = db[parsed["collection"]]
 
     def apply(session=None) -> int:
@@ -341,7 +396,7 @@ def run_write(db, parsed: dict, dry_run: bool, timeout_seconds: int) -> int:
         fn = coll.delete_one if op == "deleteOne" else coll.delete_many
         return fn(parsed["filter"], session=session).deleted_count
 
-    with pymongo.timeout(timeout_seconds):   # the server stops it too, like a statement timeout
+    with pymongo.timeout(timeout_seconds):  # the server stops it too, like a statement timeout
         if not dry_run:
             return apply()
         with db.client.start_session() as session:
@@ -350,8 +405,9 @@ def run_write(db, parsed: dict, dry_run: bool, timeout_seconds: int) -> int:
                 return apply(session)
             except OperationFailure as e:
                 if "replica set" in str(e) or e.code == 20:
-                    raise QueryValidationError("A dry run needs transactions (a replica set, as on Atlas); "
-                                               "this server has none.") from e
+                    raise QueryValidationError(
+                        "A dry run needs transactions (a replica set, as on Atlas); this server has none."
+                    ) from e
                 raise
             finally:
                 if session.in_transaction:
@@ -359,6 +415,7 @@ def run_write(db, parsed: dict, dry_run: bool, timeout_seconds: int) -> int:
 
 
 # ── Knowledge: value hints and references (same facts the SQL profile has) ──
+
 
 def _values_at(doc: Any, path: list[str]) -> list:
     """Every value at a dotted path, through arrays."""
@@ -381,18 +438,19 @@ class Sampler:
 
     def profile(self, table, key_columns: set[str]) -> None:
         from .profile.sampler import fill_column
+
         table.sampled = True
         table.primary_key = table.primary_key or ["_id"]
         coll = self._db[table.name]
         try:
-            for name, info in coll.index_information().items():
+            for info in coll.index_information().values():
                 lead = info["key"][0][0]
                 if lead in table.columns:
                     table.columns[lead].indexed = True
             table.row_estimate = coll.estimated_document_count(maxTimeMS=self._ms)
             docs = list(coll.aggregate([{"$sample": {"size": self._sample}}], maxTimeMS=self._ms))
         except Exception as e:
-            print(f"[profile] sample of {table.name} failed: {e}", file=sys.stderr)
+            log.warning(f"sample of {table.name} failed: {e}")
             return
         keys = key_columns | set(table.primary_key)
         for name, col in table.columns.items():
@@ -411,27 +469,39 @@ class ReferenceChecker:
         confirmed = set()
         for ft, fc, tt, tc in candidates:
             try:
-                docs = self._db[ft].aggregate([{"$sample": {"size": self._sample}}, {"$project": {fc: 1}}],
-                                              maxTimeMS=self._ms)
-                values = list({repr(v): v for d in docs for v in _values_at(d, fc.split("."))
-                               if v is not None and not isinstance(v, (dict, list))}.values())
+                docs = self._db[ft].aggregate(
+                    [{"$sample": {"size": self._sample}}, {"$project": {fc: 1}}], maxTimeMS=self._ms
+                )
+                values = list(
+                    {
+                        repr(v): v
+                        for d in docs
+                        for v in _values_at(d, fc.split("."))
+                        if v is not None and not isinstance(v, (dict, list))
+                    }.values()
+                )
                 if values:
                     found = self._db[tt].distinct(tc, {tc: {"$in": values}}, maxTimeMS=self._ms)
                     if len(found) / len(values) >= self._min:
                         confirmed.add((ft, fc, tt, tc))
             except Exception as e:
-                print(f"[profile] reference {ft}.{fc} -> {tt}.{tc} not checked: {e}", file=sys.stderr)
+                log.warning(f"reference {ft}.{fc} -> {tt}.{tc} not checked: {e}")
         return confirmed
 
 
 def collection_usage(db, limit: int, timeout_seconds: int) -> list[tuple[str, int]]:
     """(collection, recorded operations) from the database profiler (system.profile), most used first."""
     prefix = db.name + "."
-    rows = db["system.profile"].aggregate([
-        {"$match": {"op": {"$in": ["query", "command", "getmore"]}, "ns": {"$regex": "^" + re.escape(prefix)}}},
-        {"$group": {"_id": "$ns", "n": {"$sum": 1}}}, {"$sort": {"n": -1}}, {"$limit": limit},
-    ], maxTimeMS=timeout_seconds * 1000)
-    return [(r["_id"][len(prefix):], int(r["n"])) for r in rows]
+    rows = db["system.profile"].aggregate(
+        [
+            {"$match": {"op": {"$in": ["query", "command", "getmore"]}, "ns": {"$regex": "^" + re.escape(prefix)}}},
+            {"$group": {"_id": "$ns", "n": {"$sum": 1}}},
+            {"$sort": {"n": -1}},
+            {"$limit": limit},
+        ],
+        maxTimeMS=timeout_seconds * 1000,
+    )
+    return [(r["_id"][len(prefix) :], int(r["n"])) for r in rows]
 
 
 def explain(db, query: dict) -> dict:
@@ -458,6 +528,10 @@ def explain(db, query: dict) -> dict:
         elif isinstance(node, list):
             for v in node:
                 walk(v)
+
     walk(plan)
-    return {"stages": list(dict.fromkeys(stages)), "indexes": list(dict.fromkeys(indexes)),
-            "collection_scan": "COLLSCAN" in stages}
+    return {
+        "stages": list(dict.fromkeys(stages)),
+        "indexes": list(dict.fromkeys(indexes)),
+        "collection_scan": "COLLSCAN" in stages,
+    }

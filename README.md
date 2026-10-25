@@ -224,16 +224,19 @@ a person's token line to revoke access.
 ## Repository layout
 
 ```
-mcp_server.py            launcher: python mcp_server.py [--http host:port]
+mcp_server.py            launcher: python mcp_server.py [--http host:port | --install]
 sql_agent/
-  server.py              MCP tools, connections, knowledge wiring, validation gates, audit, transports
-  app.py                 shared engine: schema fetch, retriever, SQL validator, Groq prompts
-  knowledge.py           RAG store + relationship graph + business-context cache
-  query_planner.py       intent/time-range detection for the Groq path
-  docstore.py            uploaded documents (chunk, embed, hybrid search)
-  cache.py               sessions and caches (Redis, in-memory fallback)
-  storage.py, auth.py    persistence and auth helpers
-docs/                    ARCHITECTURE.md · SECURITY.md · EXAMPLES.md
+  config.py              every setting, read from the environment in one place
+  state.py               what the process holds per open connection, for both products
+  mcp/                   the MCP product: catalog (tools as data), handlers/ by concern, runtime (injectable
+                         collaborators), server (wiring + dispatch), transport (HTTP + OAuth), install (CLI)
+  web/                   the web product: routers/ by concern, pipeline (one path for every question),
+                         deps (request helpers), sessions (conversations), runtime, create_app()
+  validation.py, scope.py, sqlreview.py, dialects.py   the gates every query passes, per database kind
+  profile/, knowledge.py, retrieval.py, prompts.py     what the model is told, and how little of it
+  database.py, mongo.py, cql.py, connections.py        drivers, schemas, address checks, connection tokens
+  cache.py, storage.py, auth.py, rbac.py, limits.py    sessions and caches, persistence, sign-in, roles, limits
+docs/                    ARCHITECTURE.md · SECURITY.md · EXAMPLES.md · decisions/ (why things are the way they are)
 Dockerfile               hosted deployment
 ```
 

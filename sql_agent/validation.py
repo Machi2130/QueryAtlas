@@ -7,7 +7,7 @@ import re
 import sqlglot
 from sqlglot import exp
 
-AUTO_LIMIT = 100   # validate_sql adds this when the SQL has no LIMIT/TOP
+AUTO_LIMIT = 100  # validate_sql adds this when the SQL has no LIMIT/TOP
 
 # ═══════════════════════════════════════════════════════════════
 #  AGENT 3 — Validator
@@ -23,12 +23,18 @@ def is_sensitive(column: str) -> bool:
     """Never shown to the model, never selectable: the database keeps it, we just never read it."""
     name = column.lower()
     words = re.split(r"[^a-z0-9]+", name)
-    return (any(p in name for p in _SENSITIVE_PARTS) or any(w in _SENSITIVE_WORDS for w in words)
-            or any(w.endswith("pin") and len(w) <= 6 for w in words))   # mpin, pospin, atmpin
+    return (
+        any(p in name for p in _SENSITIVE_PARTS)
+        or any(w in _SENSITIVE_WORDS for w in words)
+        or any(w.endswith("pin") and len(w) <= 6 for w in words)
+    )  # mpin, pospin, atmpin
+
+
 _BLOCKED_KW = re.compile(
     r"\b(DROP|DELETE|TRUNCATE|ALTER|CREATE|INSERT|UPDATE|MERGE|EXEC|EXECUTE|"
     r"xp_\w+|sp_\w+|OPENROWSET|OPENQUERY|OPENDATASOURCE|BULK|DBCC|BACKUP|RESTORE|"
-    r"SHUTDOWN|RECONFIGURE|WAITFOR|GRANT|REVOKE|DENY)\b", re.IGNORECASE
+    r"SHUTDOWN|RECONFIGURE|WAITFOR|GRANT|REVOKE|DENY)\b",
+    re.IGNORECASE,
 )
 # Functions a SELECT can call that read server files, write sequences, sleep or take locks.
 # A read-only login is the real guard; this keeps them out of the agent's hands regardless.
@@ -38,11 +44,12 @@ _BLOCKED_FN = re.compile(
     r"load_file|sleep|benchmark|get_lock|load_extension|readfile|writefile|"
     r"query_to_xml\w*|table_to_xml\w*|schema_to_xml\w*|database_to_xml\w*|cursor_to_xml\w*|"
     r"row_to_json|to_json|to_jsonb|json_agg|jsonb_agg|json_object_agg|jsonb_object_agg|"
-    r"xmlforest|xmlagg|hstore|for_json|json_object|json_arrayagg|json_objectagg)\s*\(", re.IGNORECASE
+    r"xmlforest|xmlagg|hstore|for_json|json_object|json_arrayagg|json_objectagg)\s*\(",
+    re.IGNORECASE,
 )
-_COMMENT = re.compile(r"/\*.*?\*/|--[^\n]*", re.DOTALL)   # /*!50000 ... */ is live SQL on MySQL
-_COMMENT_MYSQL = re.compile(r"/\*.*?\*/|--[^\n]*|#[^\n]*", re.DOTALL)   # '#' comments exist only on MySQL
-MAX_LIMIT = 5000   # an explicit LIMIT above this is clamped: a cap, not a suggestion
+_COMMENT = re.compile(r"/\*.*?\*/|--[^\n]*", re.DOTALL)  # /*!50000 ... */ is live SQL on MySQL
+_COMMENT_MYSQL = re.compile(r"/\*.*?\*/|--[^\n]*|#[^\n]*", re.DOTALL)  # '#' comments exist only on MySQL
+MAX_LIMIT = 5000  # an explicit LIMIT above this is clamped: a cap, not a suggestion
 
 
 def strip_comments(sql: str, flavor: str = "") -> str:
@@ -56,13 +63,18 @@ def strip_comments(sql: str, flavor: str = "") -> str:
         if ch == "'":
             m = _STRING_LITERAL.match(sql, i)
             if m:
-                out.append(m.group(0)); i = m.end(); continue
+                out.append(m.group(0))
+                i = m.end()
+                continue
         m = comment.match(sql, i)
         if m:
             if m.group(0).startswith("/*!"):
                 raise QueryValidationError("MySQL conditional comments (/*! ... */) are not allowed.")
-            out.append(" "); i = m.end(); continue
-        out.append(ch); i += 1
+            out.append(" ")
+            i = m.end()
+            continue
+        out.append(ch)
+        i += 1
     return "".join(out)
 
 
@@ -70,12 +82,27 @@ def strip_comments(sql: str, flavor: str = "") -> str:
 # WHERE status = 'delete' is not mistaken for a DELETE.
 _STRING_LITERAL = re.compile(r"'(?:[^']|'')*'")
 
-SQLGLOT_DIALECT = {"SQLite": "sqlite", "MySQL": "mysql", "MariaDB": "mysql",
-                   "PostgreSQL": "postgres", "SQL Server": "tsql"}
-_DEFAULT_SCHEMAS = {"", "dbo", "public", "main"}   # SQL Server, PostgreSQL, SQLite
+SQLGLOT_DIALECT = {
+    "SQLite": "sqlite",
+    "MySQL": "mysql",
+    "MariaDB": "mysql",
+    "PostgreSQL": "postgres",
+    "SQL Server": "tsql",
+}
+_DEFAULT_SCHEMAS = {"", "dbo", "public", "main"}  # SQL Server, PostgreSQL, SQLite
 # Statement kinds that change data or the database, at any depth (CTE, subquery).
-_WRITE_NODES = (exp.Insert, exp.Update, exp.Delete, exp.Merge, exp.Create, exp.Drop,
-                exp.Alter, exp.TruncateTable, exp.Grant, exp.Command)
+_WRITE_NODES = (
+    exp.Insert,
+    exp.Update,
+    exp.Delete,
+    exp.Merge,
+    exp.Create,
+    exp.Drop,
+    exp.Alter,
+    exp.TruncateTable,
+    exp.Grant,
+    exp.Command,
+)
 
 
 def parse_select(query: str, flavor: str) -> exp.Expression:
@@ -83,7 +110,7 @@ def parse_select(query: str, flavor: str) -> exp.Expression:
     try:
         trees = [t for t in sqlglot.parse(query, read=SQLGLOT_DIALECT.get(flavor)) if t is not None]
     except sqlglot.errors.SqlglotError as e:
-        raise QueryValidationError(f"Could not parse the SQL as {flavor}: {str(e).splitlines()[0][:200]}")
+        raise QueryValidationError(f"Could not parse the SQL as {flavor}: {str(e).splitlines()[0][:200]}") from e
     if len(trees) != 1:
         raise QueryValidationError("One statement per call.")
     tree = trees[0]
@@ -108,12 +135,15 @@ def _expand_stars(tree: exp.Expression, columns_of: dict[str, list[str]]) -> boo
     ctes = {c.alias.lower() for c in tree.find_all(exp.CTE)}
     changed = False
     for select in list(tree.find_all(exp.Select)):
-        if not any(isinstance(e, exp.Star) or (isinstance(e, exp.Column) and isinstance(e.this, exp.Star))
-                   for e in select.expressions):
+        if not any(
+            isinstance(e, exp.Star) or (isinstance(e, exp.Column) and isinstance(e.this, exp.Star))
+            for e in select.expressions
+        ):
             continue
-        sources = ([select.args["from"].this] if select.args.get("from") else []) + \
-                  [j.this for j in select.args.get("joins") or []]
-        resolved = []   # (qualifier identifier or None, real table name or None)
+        sources = ([select.args["from"].this] if select.args.get("from") else []) + [
+            j.this for j in select.args.get("joins") or []
+        ]
+        resolved = []  # (qualifier identifier or None, real table name or None)
         for src in sources:
             real = isinstance(src, exp.Table) and src.name.lower() in columns_of and src.name.lower() not in ctes
             alias = src.args.get("alias")
@@ -128,7 +158,7 @@ def _expand_stars(tree: exp.Expression, columns_of: dict[str, list[str]]) -> boo
             return [exp.Column(this=exp.to_identifier(c, quoted=True), table=qual.copy()) for c in columns_of[table]]
 
         if not any(table for _, table in resolved):
-            continue   # star over subqueries/CTEs only: already safe
+            continue  # star over subqueries/CTEs only: already safe
         if any(qual is None for qual, _ in resolved):
             raise QueryValidationError("Give every subquery in FROM an alias, or list the columns instead of *.")
         expanded = []
@@ -152,12 +182,12 @@ def _check_sensitive(tree: exp.Expression, schema_dict: dict) -> None:
     """Credential columns stay unreadable by name, by field access ((u).password) and through
     a whole-row reference (SELECT u / row_to_json(u) in PostgreSQL)."""
     for node in tree.find_all(exp.Column, exp.Dot):
-        for ident in ([node.this] if isinstance(node, exp.Column) else node.find_all(exp.Identifier)):
+        for ident in [node.this] if isinstance(node, exp.Column) else node.find_all(exp.Identifier):
             if isinstance(ident, exp.Identifier) and is_sensitive(ident.name):
                 raise QueryValidationError(f"Access to sensitive column '{ident.name}' is blocked.")
     columns_of = {t.lower(): cols for t, cols in schema_dict.items()}
     ctes = {c.alias.lower() for c in tree.find_all(exp.CTE)}
-    row_names, known_columns = set(), set()   # whole-row names; columns of the tables this query reads
+    row_names, known_columns = set(), set()  # whole-row names; columns of the tables this query reads
     for tbl in tree.find_all(exp.Table):
         if tbl.name.lower() in ctes:
             continue
@@ -173,11 +203,15 @@ def _check_sensitive(tree: exp.Expression, schema_dict: dict) -> None:
             # outer table): the star expander only sees the subquery's own sources, so it would stay.
             select = col.parent if isinstance(col.parent, exp.Select) else None
             if select is not None and col.table.lower() in row_names:
-                own = {(s.alias or s.name).lower() for s in
-                       ([select.args["from"].this] if select.args.get("from") else [])
-                       + [j.this for j in select.args.get("joins") or []]}
+                own = {
+                    (s.alias or s.name).lower()
+                    for s in ([select.args["from"].this] if select.args.get("from") else [])
+                    + [j.this for j in select.args.get("joins") or []]
+                }
                 if col.table.lower() not in own:
-                    raise QueryValidationError(f"'{col.sql()}' refers to a table outside this subquery; name the columns.")
+                    raise QueryValidationError(
+                        f"'{col.sql()}' refers to a table outside this subquery; name the columns."
+                    )
         elif not col.table and col.name.lower() in row_names and col.name.lower() not in known_columns:
             raise QueryValidationError(f"Whole-row reference '{col.name}' is not allowed; name the columns.")
 
@@ -209,7 +243,9 @@ def validate_sql(query: str, schema_dict: dict, flavor: str, question: str) -> s
     known = {t.lower() for t in schema_dict} | cte_names
     for tbl in tree.find_all(exp.Table):
         if tbl.catalog or tbl.db.lower() not in _DEFAULT_SCHEMAS:
-            raise QueryValidationError(f"Use bare table names: '{tbl.sql()}' points outside this database's default schema.")
+            raise QueryValidationError(
+                f"Use bare table names: '{tbl.sql()}' points outside this database's default schema."
+            )
         if tbl.name.lower() not in known:
             raise QueryValidationError(f"Table '{tbl.name or tbl.sql()}' not in schema.")
     _check_sensitive(tree, schema_dict)
@@ -227,7 +263,7 @@ def validate_sql(query: str, schema_dict: dict, flavor: str, question: str) -> s
     elif limit is not None:
         n = limit.expression
         if isinstance(n, exp.Literal) and n.is_int and int(n.name) > MAX_LIMIT:
-            tree = tree.limit(MAX_LIMIT)   # the row cap is a cap, not a default
+            tree = tree.limit(MAX_LIMIT)  # the row cap is a cap, not a default
             rewritten = True
     if rewritten:
         q = tree.sql(dialect=SQLGLOT_DIALECT.get(flavor))
@@ -240,7 +276,8 @@ def validate_sql(query: str, schema_dict: dict, flavor: str, question: str) -> s
                 q = q.replace(f", {cte.alias} AS", f", {cte.alias}({', '.join(c.name for c in cols)}) AS", 1)
     return q.rstrip(";").strip()
 
-WRITE_LIMIT = 10_000   # longer statements are refused: the confirmation form must show the whole thing
+
+WRITE_LIMIT = 10_000  # longer statements are refused: the confirmation form must show the whole thing
 _DML_NODES = (exp.Insert, exp.Update, exp.Delete, exp.Merge)
 _DDL_NODES = (exp.Create, exp.Drop, exp.Alter, exp.TruncateTable)
 
@@ -256,16 +293,18 @@ def parse_write(sql: str, flavor: str, allow_ddl: bool) -> tuple[exp.Expression,
         raise QueryValidationError("One statement per call (no ';').")
     try:
         trees = [t for t in sqlglot.parse(sql, read=SQLGLOT_DIALECT.get(flavor)) if t is not None]
-    except sqlglot.errors.SqlglotError:
-        raise QueryValidationError(f"Could not read this as one {flavor} statement; nothing was run.")
+    except sqlglot.errors.SqlglotError as exc:
+        raise QueryValidationError(f"Could not read this as one {flavor} statement; nothing was run.") from exc
     if len(trees) != 1:
         raise QueryValidationError("One statement per call.")
     tree = trees[0]
     is_ddl = isinstance(tree, _DDL_NODES)
     if not (isinstance(tree, _DML_NODES) or is_ddl):
-        raise QueryValidationError("execute_write accepts INSERT, UPDATE, DELETE, MERGE"
-                                   + (", CREATE, ALTER, DROP, TRUNCATE" if allow_ddl else "")
-                                   + " only. Use run_sql for SELECT.")
+        raise QueryValidationError(
+            "execute_write accepts INSERT, UPDATE, DELETE, MERGE"
+            + (", CREATE, ALTER, DROP, TRUNCATE" if allow_ddl else "")
+            + " only. Use run_sql for SELECT."
+        )
     if is_ddl and not allow_ddl:
         raise QueryValidationError("DDL is disabled by an administrator in QueryAtlas Settings.")
     if isinstance(tree, (exp.Update, exp.Delete)):
@@ -274,4 +313,3 @@ def parse_write(sql: str, flavor: str, allow_ddl: bool) -> tuple[exp.Expression,
         if where is None or not where.find(exp.Column):
             raise QueryValidationError("UPDATE/DELETE needs a WHERE clause on the table's columns.")
     return tree, is_ddl
-

@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-import os
-
 from sqlglot import exp
 
+from .config import settings
 from .validation import SQLGLOT_DIALECT, parse_select
 
 # ═══════════════════════════════════════════════════════════════
 #  TENANT SCOPE — enforced by rewriting, shared by MCP and the web app
 # ═══════════════════════════════════════════════════════════════
+
 
 def _parse_scope_pins(raw: str) -> dict[str, tuple[str, str]]:
     """SCOPE_PINS="alice:Tenant_Id=7,bob:Tenant_Id=9" -> {identity: (column, value)}.
@@ -25,7 +25,7 @@ def _parse_scope_pins(raw: str) -> dict[str, tuple[str, str]]:
     return pins
 
 
-SCOPE_PINS = _parse_scope_pins(os.getenv("SCOPE_PINS", ""))
+SCOPE_PINS = _parse_scope_pins(settings.scope_pins)
 
 
 def make_scope(column: str, value: str, schema: dict, label: str = "", pinned: bool = False) -> dict | None:
