@@ -133,7 +133,7 @@ def parse_write(query: str, schema_dict: dict, allow_ddl: bool) -> tuple[str, st
             raise QueryValidationError(f"Writing sensitive column '{quoted or bare}' is not allowed.")
     if _DDL.match(blanked):
         if not allow_ddl:
-            raise QueryValidationError("DDL is disabled by an administrator in SQL-Agent Settings.")
+            raise QueryValidationError("DDL is disabled by an administrator in QueryAtlas Settings.")
         if _NOT_TABLE_DDL.match(blanked):
             raise QueryValidationError("Only table DDL is allowed (no roles, users, keyspaces or functions).")
         m = re.search(r'\b(?:TABLE|INDEX)\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?("[^"]+"|\w+)', blanked, re.IGNORECASE)

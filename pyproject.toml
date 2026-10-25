@@ -3,9 +3,9 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "sql-agent-mcp"
+name = "queryatlas"
 version = "1.0.0"
-description = "Multi-Database Natural Language SQL & NoSQL Agent + MCP Server with RSA-2048 OAEP Connection Tokens and RBAC"
+description = "Governed natural-language access to SQL and NoSQL databases for LLMs: MCP server and web app with a read-only validator, tenant scope and audit"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -39,7 +39,7 @@ dependencies = [
 ]
 
 [project.scripts]
-sql-agent-mcp = "sql_agent.server:cli"
+queryatlas = "sql_agent.server:cli"
 
 [tool.setuptools.packages.find]
 include = ["sql_agent*"]

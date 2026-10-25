@@ -1,6 +1,6 @@
 # Architecture
 
-SQL-Agent is an MCP (Model Context Protocol) server. The client — Claude Code, Claude
+QueryAtlas is an MCP (Model Context Protocol) server. The client — Claude Code, Claude
 Desktop, Cursor — brings the language model; this server brings governed access to
 databases plus the knowledge the model needs to query them well.
 
@@ -41,7 +41,7 @@ One question, end to end:
 sequenceDiagram
     participant U as User
     participant L as LLM (client)
-    participant S as SQL-Agent
+    participant S as QueryAtlas
     participant K as Knowledge store
     participant D as Database
 
