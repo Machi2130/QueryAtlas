@@ -162,15 +162,19 @@ async def _gated(p: pipeline.Prepared, generated: str) -> tuple[str, str]:
         raise HTTPException(status_code=400, detail=f"Invalid JSON: {je}") from je
 
 
-async def _run_with_repair(p: pipeline.Prepared, as_written: str, to_run: str) -> tuple[list, list, str | None, int]:
-    """(columns, rows, error, attempts): one repair round with the database's error when the model wrote the query."""
+async def _run_with_repair(
+    p: pipeline.Prepared, as_written: str, to_run: str
+) -> tuple[list, list, str | None, int, str, str]:
+    """(columns, rows, error, attempts, as written, as run): one repair round with the database's error when
+    the model wrote the query. The queries returned are the ones that produced the rows, so a repaired
+    statement is what gets remembered, cached and shown, never the one that failed."""
     columns, rows, last_error, attempt = [], [], None, 0
     for attempt in range(2):
         try:
             columns, rows = await pipeline.run(p, to_run)
-            return columns, rows, None, attempt
+            return columns, rows, None, attempt, as_written, to_run
         except TimeoutError:
-            return [], [], f"Query timed out after {wrt.query_timeout}s.", attempt
+            return [], [], f"Query timed out after {wrt.query_timeout}s.", attempt, as_written, to_run
         except Exception as e:
             last_error = str(e)
             if attempt > 0 or not p.client:
@@ -180,7 +184,7 @@ async def _run_with_repair(p: pipeline.Prepared, as_written: str, to_run: str) -
             except Exception as repair_error:
                 log.debug(f"repair round failed: {repair_error}")
                 break
-    return columns, rows, last_error, attempt
+    return columns, rows, last_error, attempt, as_written, to_run
 
 
 @router.post("/api/query")
@@ -209,7 +213,7 @@ async def query(
     t_start = time.monotonic()
     generated, review_notes, token_usage = await _generated(p)
     as_written, to_run = await _gated(p, generated)
-    columns, rows, last_error, attempt = await _run_with_repair(p, as_written, to_run)
+    columns, rows, last_error, attempt, as_written, to_run = await _run_with_repair(p, as_written, to_run)
     latency_ms = int((time.monotonic() - t_start) * 1000)
     if last_error and not columns:
         _log(background_tasks, p, to_run, 0, latency_ms, False, error=last_error)
