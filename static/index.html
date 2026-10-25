@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
-<title>SQL-Agent</title>
+<title>QueryAtlas</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b0d12'/%3E%3Ccircle cx='16' cy='16' r='7' fill='%2336d1e0'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -203,7 +203,7 @@ code.tok{display:block;font-family:var(--mono);font-size:12.5px;padding:10px 12p
 <!-- ═══ AUTH ═══ -->
 <section id="auth">
   <div class="card">
-    <div class="logo"><i>▲</i>SQL-Agent</div>
+    <div class="logo"><i>▲</i>QueryAtlas</div>
     <h1 id="auth-title">Sign in</h1>
     <p>Ask your databases questions in plain language.</p>
     <form id="auth-form" autocomplete="on">
@@ -225,7 +225,7 @@ code.tok{display:block;font-family:var(--mono);font-size:12.5px;padding:10px 12p
 <div id="app" class="hidden">
   <div class="scrim" id="scrim"></div>
   <aside>
-    <div class="brand"><div class="logo"><i>▲</i>SQL-Agent</div><button class="btn ghost sm" id="side-close" aria-label="Close menu">✕</button></div>
+    <div class="brand"><div class="logo"><i>▲</i>QueryAtlas</div><button class="btn ghost sm" id="side-close" aria-label="Close menu">✕</button></div>
     <div class="side-scroll">
       <div class="sec">
         <h3>Databases <button id="add-db">+ Add</button></h3>
@@ -680,12 +680,12 @@ function openUnlock(locked, question) {
 }
 
 async function openMcp() {
-  const { el } = modal('Connect Claude Code', `<p style="color:var(--t2);margin:6px 0 0">A personal token lets Claude Code or Cursor use SQL-Agent as an MCP server, with your access and your audit trail.</p><div id="mcpbody" style="margin-top:12px"><div class="empty">Loading…</div></div>`);
+  const { el } = modal('Connect Claude Code', `<p style="color:var(--t2);margin:6px 0 0">A personal token lets Claude Code or Cursor use QueryAtlas as an MCP server, with your access and your audit trail.</p><div id="mcpbody" style="margin-top:12px"><div class="empty">Loading…</div></div>`);
   const body = $('#mcpbody', el);
   const render = async d => {
     const url = location.origin.replace(/:\d+$/, '') + ':8765/mcp';
     body.innerHTML = `${d.has_token ? `<div class="kv"><b>Token</b><span>${esc(d.prefix)} · created ${esc(d.created)}</span></div>` : `<div class="empty">No token yet.</div>`}
-      ${d.token ? `<p style="margin:12px 0 4px;color:var(--warn);font-size:13px">Copy it now — it is shown only once.</p><code class="tok">claude mcp add --transport http sql-agent ${esc(url)} --header "Authorization: Bearer ${esc(d.token)}"</code>` : ''}
+      ${d.token ? `<p style="margin:12px 0 4px;color:var(--warn);font-size:13px">Copy it now — it is shown only once.</p><code class="tok">claude mcp add --transport http queryatlas ${esc(url)} --header "Authorization: Bearer ${esc(d.token)}"</code>` : ''}
       <div style="display:flex;gap:10px;margin-top:14px"><button class="btn primary" id="mk">${d.has_token ? 'Replace token' : 'Create token'}</button>${d.has_token ? `<button class="btn danger" id="rm">Revoke</button>` : ''}</div>`;
     $('#mk', body).onclick = async () => render(await j('/api/mcp-token', { method: 'POST' }));
     const rm = $('#rm', body); if (rm) rm.onclick = async () => { await j('/api/mcp-token', { method: 'DELETE' }); render(await j('/api/mcp-token')); };

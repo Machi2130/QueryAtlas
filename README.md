@@ -1,15 +1,15 @@
-# SQL-Agent — ask your database questions from Claude Code
+# QueryAtlas — ask your database questions from Claude Code
 
 ![python](https://img.shields.io/badge/python-3.12-blue)
 ![stack](https://img.shields.io/badge/MCP%20%C2%B7%20FastAPI%20%C2%B7%20SQLAlchemy%20%C2%B7%20ChromaDB%20%C2%B7%20Docker-informational)
 
 <p align="center">
   <img src="docs/architecture.svg" width="100%"
-       alt="SQL-Agent: questions from developers (MCP) and teams (web app) pass four rings before reaching the databases — sign-in and roles, the read-only validator, the tenant filter and encrypted connections. The AI model and the knowledge layer help write each query, every request is audited, and an unsafe query is stopped at the validator.">
+       alt="QueryAtlas: questions from developers (MCP) and teams (web app) pass four rings before reaching the databases — sign-in and roles, the read-only validator, the tenant filter and encrypted connections. The AI model and the knowledge layer help write each query, every request is audited, and an unsafe query is stopped at the validator.">
 </p>
 <p align="center">
   <img src="docs/how-it-works.svg" width="100%"
-       alt="Inside SQL-Agent: a question typed in the chat becomes a glowing packet that travels through the engine. The access check confirms who is asking and their role; the router binds the chat to one of several open databases; the knowledge vault is scanned and 40 tables shrink to the 2 that matter, with a data-confirmed join, a glossary note and value hints; the query is written by SQL-Agent's AI or by Claude; the validator seals it (read-only, no credential columns, tenant filter attached, row cap and time limit); it runs through an encrypted tunnel with a database-enforced countdown; rows return as a table, a chart and a one-line summary; and once confirmed, the verified example flows back into the vault for next time. The audit tape records each step and a subtitle narrates.">
+       alt="Inside QueryAtlas: a question typed in the chat becomes a glowing packet that travels through the engine. The access check confirms who is asking and their role; the router binds the chat to one of several open databases; the knowledge vault is scanned and 40 tables shrink to the 2 that matter, with a data-confirmed join, a glossary note and value hints; the query is written by QueryAtlas's AI or by Claude; the validator seals it (read-only, no credential columns, tenant filter attached, row cap and time limit); it runs through an encrypted tunnel with a database-enforced countdown; rows return as a table, a chart and a one-line summary; and once confirmed, the verified example flows back into the vault for next time. The audit tape records each step and a subtitle narrates.">
 </p>
 
 An MCP server that gives an AI assistant (Claude Code, Claude Desktop, Cursor) a
@@ -32,7 +32,7 @@ moment they touch a real database:
 - **Governance.** Generic MCP database connectors are thin wrappers: one shared
   credential, no record of who ran what, no separation between users.
 
-SQL-Agent addresses each one. A per-database **knowledge layer** (real foreign keys,
+QueryAtlas addresses each one. A per-database **knowledge layer** (real foreign keys,
 schema embeddings, a human glossary, remembered question→SQL pairs) sends the model only
 what a question needs — about 700 tokens whatever the schema size, measured at 67% less
 than the full schema on a 42-table database, 89% less at 120 tables and 97% less at 300 —
@@ -45,7 +45,7 @@ connection an organisation can hand to an AI assistant without handing over the 
 ```mermaid
 flowchart LR
     U[Analyst or developer<br/>in Claude Code / Cursor] -->|question| M[LLM]
-    M -->|MCP tools| S[SQL-Agent server]
+    M -->|MCP tools| S[QueryAtlas server]
     S --> K[Knowledge per database<br/>foreign keys · embeddings · glossary · remembered queries]
     K -->|only the relevant tables + joins| M
     M -->|SELECT| V{Validator<br/>read-only · tenant filter · row cap}
@@ -60,8 +60,8 @@ flowchart LR
 1. **Python 3.12** and **Git**.
 2. Clone and install:
    ```
-   git clone https://github.com/Machi2130/SQL-Agent.git
-   cd SQL-Agent
+   git clone https://github.com/Machi2130/QueryAtlas.git
+   cd QueryAtlas
    pip install -r requirements.txt
    ```
 3. **SQL Server only:** install *ODBC Driver 17 for SQL Server*.
@@ -82,8 +82,8 @@ flowchart LR
    python mcp_server.py --install            # optional: --user <your-name>
    ```
    This registers stdio mode with this exact Python and the absolute path (replacing any earlier
-   `sql-agent` entry), so Claude Code starts the server itself — nothing to keep running.
-   Restart Claude Code and check: `claude mcp list` should show `sql-agent … ✔ Connected`.
+   `queryatlas` entry), so Claude Code starts the server itself — nothing to keep running.
+   Restart Claude Code and check: `claude mcp list` should show `queryatlas … ✔ Connected`.
    The first start downloads an ~80 MB embedding model.
 
    **If it doesn't connect:**
@@ -149,10 +149,10 @@ only — INSERT/UPDATE/DELETE/DDL are rejected), `execute_write` (developer mode
   `truncated: true` when there was more). For real protection use a **read-only database login**
   (`db_datareader`) for the server — the SQL guard is the second line, not the first. SQL Server:
   ```sql
-  CREATE LOGIN sql_agent_ro WITH PASSWORD = '<long-random-password>';
+  CREATE LOGIN queryatlas_ro WITH PASSWORD = '<long-random-password>';
   USE [YourDatabase];
-  CREATE USER sql_agent_ro FOR LOGIN sql_agent_ro;
-  ALTER ROLE db_datareader ADD MEMBER sql_agent_ro;
+  CREATE USER queryatlas_ro FOR LOGIN queryatlas_ro;
+  ALTER ROLE db_datareader ADD MEMBER queryatlas_ro;
   ```
   Repeat the `USE … CREATE USER … ALTER ROLE` block per database the agent should read.
 - Developers who need to change data use **`execute_write`**: the server must set
@@ -185,14 +185,14 @@ people connect over HTTP.
 # on the host (after setting MCP_AUTH_TOKEN and GROQ_API_KEY in .env):
 python mcp_server.py --http 0.0.0.0:8000
 #   or
-docker build -t sql-agent . && docker run -d --name sql-agent -p 8000:8000 \
-    --env-file .env -v sql-agent-knowledge:/app/.chroma_data sql-agent
+docker build -t queryatlas . && docker run -d --name queryatlas -p 8000:8000 \
+    --env-file .env -v queryatlas-knowledge:/app/.chroma_data queryatlas
 ```
 
 Each colleague then runs one command — no Python, no drivers, no model download:
 
 ```
-claude mcp add --transport http sql-agent http://<host>:8000/mcp --header "Authorization: Bearer <MCP_AUTH_TOKEN>"
+claude mcp add --transport http queryatlas http://<host>:8000/mcp --header "Authorization: Bearer <MCP_AUTH_TOKEN>"
 ```
 
 **Everything is per person.** Each user's connections, learned schema knowledge,
@@ -217,7 +217,7 @@ a person's token line to revoke access.
   the server's `MCP_DB_PASSWORD*` are only ever used for those listed hosts. SQLite only inside `MCP_SQLITE_DIR`.
 - **Never stored, never shown.** Passwords stay in memory for the open connection only (not in Redis,
   files, logs or knowledge), and connection errors are fixed sentences, never the driver's text.
-- **For the customer's IT team:** create a dedicated **read-only** database login for SQL-Agent
+- **For the customer's IT team:** create a dedicated **read-only** database login for QueryAtlas
   (see *Safety* above). Sign-ups get the `customer` role (connect and read); writes need an admin to grant
   `sql.write`, a connection opened with *Allow data edits*, and a typed YES for every statement.
 
