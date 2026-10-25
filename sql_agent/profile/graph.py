@@ -23,8 +23,8 @@ if TYPE_CHECKING:
 
 
 class SchemaGraph:
-    def __init__(self, relationships: list["Relationship"]):
-        self._adj: dict[str, list[tuple[str, "Relationship"]]] = defaultdict(list)
+    def __init__(self, relationships: list[Relationship]):
+        self._adj: dict[str, list[tuple[str, Relationship]]] = defaultdict(list)
         for r in relationships:
             self._adj[r.from_table].append((r.to_table, r))
             self._adj[r.to_table].append((r.from_table, r))
@@ -35,16 +35,16 @@ class SchemaGraph:
     def degree(self, table: str) -> int:
         return len(self._adj.get(table, []))
 
-    def _dijkstra(self, sources: set[str]) -> tuple[dict[str, float], dict[str, tuple[str, "Relationship"]]]:
+    def _dijkstra(self, sources: set[str]) -> tuple[dict[str, float], dict[str, tuple[str, Relationship]]]:
         """Distances from the nearest source, and the edge each node was reached by."""
         dist: dict[str, float] = {s: 0.0 for s in sources}
-        prev: dict[str, tuple[str, "Relationship"]] = {}
-        heap = [(0.0, s) for s in sorted(sources)]   # sorted: deterministic tie-breaking
+        prev: dict[str, tuple[str, Relationship]] = {}
+        heap = [(0.0, s) for s in sorted(sources)]  # sorted: deterministic tie-breaking
         heapq.heapify(heap)
         while heap:
             d, node = heapq.heappop(heap)
             if d > dist.get(node, float("inf")):
-                continue                              # stale entry
+                continue  # stale entry
             for nxt, rel in self._adj.get(node, []):
                 nd = d + rel.weight
                 if nd < dist.get(nxt, float("inf")):
@@ -52,7 +52,7 @@ class SchemaGraph:
                     heapq.heappush(heap, (nd, nxt))
         return dist, prev
 
-    def shortest_path(self, src: str, dst: str) -> list["Relationship"] | None:
+    def shortest_path(self, src: str, dst: str) -> list[Relationship] | None:
         _, prev = self._dijkstra({src})
         if dst != src and dst not in prev:
             return None
@@ -66,7 +66,7 @@ class SchemaGraph:
         """Relationship-weighted distance from one table to every reachable table."""
         return self._dijkstra({source})[0]
 
-    def connect(self, terminals: list[str], max_tables: int | None = None) -> tuple[list[str], list["Relationship"]]:
+    def connect(self, terminals: list[str], max_tables: int | None = None) -> tuple[list[str], list[Relationship]]:
         """Tables and joins connecting as many terminals as possible (given most relevant
         first). The tree is grown from each terminal in turn and the best kept: most
         terminals covered, then fewest tables, then the more relevant root. Growing only
@@ -81,17 +81,17 @@ class SchemaGraph:
                 best = (score, tables, edges)
         return (best[1], best[2]) if best else ([], [])
 
-    def _grow(self, terminals: list[str], max_tables: int | None) -> tuple[list[str], list["Relationship"]]:
+    def _grow(self, terminals: list[str], max_tables: int | None) -> tuple[list[str], list[Relationship]]:
         """Takahashi–Matsuyama: attach each terminal, in order, by its shortest path to the
         tree. Unreachable terminals, or ones that would pass max_tables, are skipped."""
         tree: list[str] = [terminals[0]]
-        edges: list["Relationship"] = []
+        edges: list[Relationship] = []
         for term in terminals[1:]:
             if term in tree:
                 continue
             dist, prev = self._dijkstra(set(tree))
             if term not in dist:
-                continue                              # no relationship path: leave it out
+                continue  # no relationship path: leave it out
             path_nodes, path_edges, node = [], [], term
             while node not in tree:
                 path_nodes.append(node)

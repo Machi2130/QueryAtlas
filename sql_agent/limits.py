@@ -7,15 +7,14 @@ in memory. The limit counts the bytes actually received: a request that declares
 
 from __future__ import annotations
 
-import os
-
 from . import cache
+from .config import settings
 
-MAX_REQUEST_BYTES = int(float(os.getenv("MAX_REQUEST_MB", "25")) * 1024 * 1024)
+MAX_REQUEST_BYTES = settings.max_request_bytes
 
-SIGN_IN_FAILURES, SIGN_IN_WINDOW = 10, 15 * 60   # per username, web and MCP sign-in alike
-SIGN_UPS_PER_HOUR = int(os.getenv("SIGN_UPS_PER_HOUR", "5"))   # per client address
-MCP_CALLS_PER_MINUTE = int(os.getenv("MCP_RATE_LIMIT_PER_MINUTE", "60"))   # per identity, hosted only
+SIGN_IN_FAILURES, SIGN_IN_WINDOW = 10, 15 * 60  # per username, web and MCP sign-in alike
+SIGN_UPS_PER_HOUR = settings.sign_ups_per_hour  # per client address
+MCP_CALLS_PER_MINUTE = settings.mcp_calls_per_minute  # per identity, hosted only
 
 
 def sign_in_blocked(username: str) -> bool:
@@ -45,10 +44,10 @@ def mcp_call_allowed(identity: str) -> tuple[bool, int]:
 
 _SECURITY_HEADERS = [
     (b"x-content-type-options", b"nosniff"),
-    (b"x-frame-options", b"DENY"),                        # no page (sign-in forms included) inside another site
+    (b"x-frame-options", b"DENY"),  # no page (sign-in forms included) inside another site
     (b"content-security-policy", b"frame-ancestors 'none'"),
     (b"referrer-policy", b"no-referrer"),
-    (b"strict-transport-security", b"max-age=31536000; includeSubDomains"),   # browsers apply it over HTTPS only
+    (b"strict-transport-security", b"max-age=31536000; includeSubDomains"),  # browsers apply it over HTTPS only
     (b"permissions-policy", b"camera=(), microphone=(), geolocation=()"),
 ]
 
@@ -68,7 +67,8 @@ class SecurityHeaders:
             if message["type"] == "http.response.start":
                 present = {k.lower() for k, _ in message.get("headers", [])}
                 message["headers"] = list(message.get("headers", [])) + [
-                    h for h in _SECURITY_HEADERS if h[0] not in present]
+                    h for h in _SECURITY_HEADERS if h[0] not in present
+                ]
             await send(message)
 
         await self.app(scope, receive, with_headers)
@@ -111,11 +111,16 @@ class BodyLimit:
         try:
             await self.app(scope, counted_receive, tracked_send)
         except _TooLarge:
-            if not started:   # once a response has begun it can only be cut off, which the server does
+            if not started:  # once a response has begun it can only be cut off, which the server does
                 await self._refuse(send)
 
     async def _refuse(self, send):
         body = b'{"error": "request too large"}'
-        await send({"type": "http.response.start", "status": 413,
-                    "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())]})
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 413,
+                "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())],
+            }
+        )
         await send({"type": "http.response.body", "body": body})

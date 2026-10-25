@@ -47,3 +47,27 @@ include = ["sql_agent*"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+src = ["."]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "UP", "I"]
+ignore = [
+    "E501",   # long lines are prompt text and tool descriptions; the formatter wraps code
+    "B008",   # FastAPI's Depends()/File() in defaults is the framework's idiom
+    "UP042",  # (str, Enum) stays: StrEnum changes str() of members, which reach JSON and prompts
+]
+
+[tool.ruff.lint.per-file-ignores]
+"sql_agent/server.py" = ["F401", "E402"]   # the MCP facade re-exports names for the launcher and the tests
+"sql_agent/app.py" = ["F401", "E402"]      # the web facade: .env is loaded before the package imports
+"sql_agent/mcp/__init__.py" = ["E402"]     # chdir + .env before any module reads its settings
+
+[tool.pyright]
+include = ["sql_agent"]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
+reportMissingImports = "warning"

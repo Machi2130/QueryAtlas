@@ -16,9 +16,11 @@ SQL, MONGO, CASSANDRA = "sql", "mongo", "cassandra"
 
 LANGUAGE = {
     SQL: "SQL: one SELECT (WITH / UNION allowed) in the database's dialect.",
-    MONGO: ('MongoDB JSON, either a find {"collection": c, "filter": {...}, "projection": {...}, "sort": {...}, '
-            '"limit": n} or an aggregate {"collection": c, "pipeline": [{"$match": ...}, {"$group": ...}, ...]} '
-            "(read-only stages; $lookup / $unionWith on collections of this database)."),
+    MONGO: (
+        'MongoDB JSON, either a find {"collection": c, "filter": {...}, "projection": {...}, "sort": {...}, '
+        '"limit": n} or an aggregate {"collection": c, "pipeline": [{"$match": ...}, {"$group": ...}, ...]} '
+        "(read-only stages; $lookup / $unionWith on collections of this database)."
+    ),
     CASSANDRA: "CQL: one SELECT on one table (no joins); add ALLOW FILTERING when filtering on non-key columns.",
 }
 
@@ -42,7 +44,7 @@ def validate_read(k: str, query: Any, schema: dict, flavor: str) -> Any:
             try:
                 query = json.loads(query)
             except json.JSONDecodeError as e:
-                raise QueryValidationError(f"Not valid JSON: {e.msg} (line {e.lineno}, column {e.colno}).")
+                raise QueryValidationError(f"Not valid JSON: {e.msg} (line {e.lineno}, column {e.colno}).") from e
         return mongo.validate(query, schema)
     if k == CASSANDRA:
         return cql.validate(str(query), schema)
@@ -65,7 +67,7 @@ def parse_write(k: str, query: Any, schema: dict, allow_ddl: bool) -> tuple[Any,
             try:
                 query = json.loads(query)
             except json.JSONDecodeError as e:
-                raise QueryValidationError(f"Not valid JSON: {e.msg} (line {e.lineno}, column {e.colno}).")
+                raise QueryValidationError(f"Not valid JSON: {e.msg} (line {e.lineno}, column {e.colno}).") from e
         parsed = mongo.parse_write(query, schema)
         return parsed, False, [parsed["collection"]]
     q, table, is_ddl = cql.parse_write(str(query), schema, allow_ddl)
@@ -80,19 +82,38 @@ def run_write(k: str, handle, parsed: Any, dry_run: bool, timeout_seconds: int) 
     return cql.run_write(handle, parsed, timeout_seconds)
 
 
-def open_profile(k: str, handle, *, flavor: str, schema: dict, foreign_keys: list, context: dict,
-                 folder: str, keys: dict | None = None, refresh: bool = False) -> ProfileService:
+def open_profile(
+    k: str,
+    handle,
+    *,
+    flavor: str,
+    schema: dict,
+    foreign_keys: list,
+    context: dict,
+    folder: str,
+    keys: dict | None = None,
+    refresh: bool = False,
+) -> ProfileService:
     """What the agent knows about the database, built the same way for every kind: structure now,
     value hints lazily per table, references kept only when the data confirms them."""
     common = dict(flavor=flavor, schema=schema, business_context=context, folder=folder, refresh=refresh)
     if k == MONGO:
-        return ProfileService.open(**common, foreign_keys=[], sampler=mongo.Sampler(handle),
-                                   confirm=mongo.ReferenceChecker(handle), primary_keys={t: ["_id"] for t in schema})
+        return ProfileService.open(
+            **common,
+            foreign_keys=[],
+            sampler=mongo.Sampler(handle),
+            confirm=mongo.ReferenceChecker(handle),
+            primary_keys={t: ["_id"] for t in schema},
+        )
     if k == CASSANDRA:
         keys = keys or {}
-        return ProfileService.open(**common, foreign_keys=[], sampler=cql.Sampler(handle, keys),
-                                   confirm=lambda _guesses: set(),   # CQL has no joins
-                                   primary_keys={t: v["partition"] + v["clustering"] for t, v in keys.items()})
+        return ProfileService.open(
+            **common,
+            foreign_keys=[],
+            sampler=cql.Sampler(handle, keys),
+            confirm=lambda _guesses: set(),  # CQL has no joins
+            primary_keys={t: v["partition"] + v["clustering"] for t, v in keys.items()},
+        )
     return ProfileService.open(**common, foreign_keys=foreign_keys, engine=handle)
 
 

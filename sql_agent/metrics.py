@@ -22,7 +22,7 @@ def schema_tokens(schema: dict) -> int:
     return estimate_tokens("\n".join(f"{t}: {', '.join(cols)}" for t, cols in schema.items()))
 
 
-_totals: dict[str, dict[str, int]] = {}   # per connection: questions, tokens sent, tokens a full dump would be
+_totals: dict[str, dict[str, int]] = {}  # per connection: questions, tokens sent, tokens a full dump would be
 
 
 def record(sid: str, sent: Any, schema: dict) -> dict[str, int]:
@@ -39,9 +39,12 @@ def summary(sid: str) -> dict:
     b = _totals.get(sid)
     if not b or not b["questions"]:
         return {"questions": 0}
-    return {**b, "saved_pct": _pct(b["sent"], b["full_schema"]),
-            "note": f"estimated tokens, ~{CHARS_PER_TOKEN} chars each; 'sent' = the context the model got, "
-                    "'full_schema' = what sending every table would cost"}
+    return {
+        **b,
+        "saved_pct": _pct(b["sent"], b["full_schema"]),
+        "note": f"estimated tokens, ~{CHARS_PER_TOKEN} chars each; 'sent' = the context the model got, "
+        "'full_schema' = what sending every table would cost",
+    }
 
 
 def forget(sid: str) -> None:

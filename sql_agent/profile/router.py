@@ -23,8 +23,8 @@ class PrefixVocabulary:
     its prefixes, so no scan over the vocabulary is needed (a hash-map trie)."""
 
     def __init__(self):
-        self._words: dict[str, int] = {}       # whole word -> weight
-        self._prefixes: dict[str, int] = {}    # prefix of some word -> best weight below it
+        self._words: dict[str, int] = {}  # whole word -> weight
+        self._prefixes: dict[str, int] = {}  # prefix of some word -> best weight below it
 
     def add(self, text: str, weight: int) -> None:
         for part in re.split(r"[^a-z0-9]+", str(text).lower()):
@@ -36,8 +36,8 @@ class PrefixVocabulary:
 
     def match(self, word: str) -> int:
         """Weight of the best vocabulary word that is a prefix of `word` or starts with it."""
-        best = self._prefixes.get(word, 0)                    # some vocabulary word starts with `word`
-        for i in range(MIN_PART, len(word) + 1):              # `word` starts with a vocabulary word
+        best = self._prefixes.get(word, 0)  # some vocabulary word starts with `word`
+        for i in range(MIN_PART, len(word) + 1):  # `word` starts with a vocabulary word
             best = max(best, self._words.get(word[:i], 0))
         return best
 
@@ -64,14 +64,14 @@ def database_vocabulary(schema: dict, profile=None, notes: list[dict] = ()) -> P
 
 @dataclass
 class RouteDecision:
-    key: str | None                        # the database to use; None = ask the user
-    reason: str                            # only-one | matched | no-match | ambiguous
-    scores: list[tuple[str, int]] = field(default_factory=list)   # best first
+    key: str | None  # the database to use; None = ask the user
+    reason: str  # only-one | matched | no-match | ambiguous
+    scores: list[tuple[str, int]] = field(default_factory=list)  # best first
 
 
 class DatabaseRouter:
     def __init__(self, margin: float = 1.5):
-        self._margin = margin               # winner must beat the runner-up by this factor
+        self._margin = margin  # winner must beat the runner-up by this factor
 
     @staticmethod
     def score(question: str, vocab: PrefixVocabulary) -> int:
@@ -80,11 +80,12 @@ class DatabaseRouter:
     def route(self, question: str, vocabularies: dict[str, PrefixVocabulary], active: str | None) -> RouteDecision:
         if len(vocabularies) == 1:
             return RouteDecision(next(iter(vocabularies)), "only-one")
-        scores = sorted(((k, self.score(question, v)) for k, v in vocabularies.items()),
-                        key=lambda kv: (-kv[1], kv[0] != active))
+        scores = sorted(
+            ((k, self.score(question, v)) for k, v in vocabularies.items()), key=lambda kv: (-kv[1], kv[0] != active)
+        )
         (best, top), (_, second) = scores[0], scores[1]
         if top == 0:
-            return RouteDecision(active, "no-match", scores)        # nothing recognised: stay where we are
+            return RouteDecision(active, "no-match", scores)  # nothing recognised: stay where we are
         if second == 0 or top >= self._margin * second:
             return RouteDecision(best, "matched", scores)
         return RouteDecision(None, "ambiguous", scores)

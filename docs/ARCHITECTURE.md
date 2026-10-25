@@ -6,7 +6,7 @@ databases plus the knowledge the model needs to query them well.
 
 ```mermaid
 flowchart LR
-    C[MCP client<br/>Claude / Cursor] -- stdio or HTTP + bearer token --> S[sql_agent/server.py]
+    C[MCP client<br/>Claude / Cursor] -- stdio or HTTP + bearer token --> S[sql_agent/mcp]
     S --> K[Knowledge layer<br/>FKs · embeddings · graph · glossary · query memory]
     S --> V[Validator<br/>read-only · tenant scope · row cap]
     S --> A[Audit log<br/>per user]
@@ -77,8 +77,9 @@ flowchart TD
 
 | Module | Responsibility |
 |---|---|
-| `sql_agent/server.py` | MCP tools, connection registry, audit, stdio + HTTP transports |
-| `sql_agent/app.py` | Web app (FastAPI): routes, conversations, streaming |
+| `sql_agent/mcp/` | The MCP product. `catalog.py` holds the tool definitions as data; `handlers/` has one module per concern (connect, query, writes, knowledge, documents, capabilities); `runtime.py` is the injectable object every handler depends on (policy, connection store, live sessions, the ports to the outside); `server.py` wires the MCP `Server`, the permission check and dispatch; `transport.py` is Streamable HTTP + OAuth 2.1 PKCE; `install.py` the command line. `sql_agent/server.py` is the facade at the old import path |
+| `sql_agent/web/` | The web product. `create_app()` assembles `routers/` (auth, connections, query, sessions, settings, llm, documents); `pipeline.py` is the one path a question takes behind `/api/query`, `/api/query/stream` and `/api/hybrid`; `deps.py` holds the request helpers (permissions, what a viewer may see, the active connection, the tenant-scope gate); `runtime.py` the injectable collaborators. `sql_agent/app.py` is the facade |
+| `sql_agent/config.py`, `state.py`, `ports.py` | Every setting in one place; the per-connection state and its store, shared by both products; the protocols the runtimes' ports satisfy |
 | `sql_agent/profile/` | **What the agent knows about a database**, built the same way for every one (below) |
 | `sql_agent/prompts.py` | `build_sql_messages` (the only prompt builder for server-side SQL), connect-time analysis, auto-fix |
 | `sql_agent/validation.py` | Read-only validator, parsed per dialect (sqlglot) |
@@ -133,7 +134,8 @@ When an answer is wrong, fix the knowledge (a glossary note, a confirmed answer,
 relationship rule), not the prompt for one database. Measured on two unlike databases
 (declared FKs vs none at all): 11/11 live answers matched hand-written SQL, 2026-10-20.
 | `sql_agent/docstore.py` | Uploaded documents: chunking, embedding, hybrid search |
-| `sql_agent/cache.py` | Sessions, schema cache and query cache — Redis with in-memory fallback |
+| `sql_agent/cache.py` | Sessions, schema cache, query cache, rate windows and recent turns behind one `CacheBackend` protocol: Redis when configured, else a bounded in-process store |
+| `docs/decisions/` | Architecture decision records: the choices a future change could undo without knowing why |
 | `sql_agent/storage.py`, `auth.py` | Memory persistence and web-app auth (only used by the companion UI) |
 | `mcp_server.py` | Root launcher: `python mcp_server.py [--http host:port]` |
 | `tests/test_eval.py` | Benchmark on a fixture DB: retrieval recall/precision, clarify, safety, execution accuracy for any model's SQL (`--predictions`) or Groq (`--groq`) |

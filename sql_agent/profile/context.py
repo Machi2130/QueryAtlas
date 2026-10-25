@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable
 
 from .models import ColumnKind, Relationship
 from .service import COPY_WORDS, ProfileService, name_tokens
 from .vocab import question_words
 
 MAX_PROMPT_TABLES = 6
-MAX_PICKED_TABLES = 24   # picker guidance only; graph paths are not capped at this value
-RRF_K = 10               # rank fusion: a table near the top of either ranking stays near the top
+MAX_PICKED_TABLES = 24  # picker guidance only; graph paths are not capped at this value
+RRF_K = 10  # rank fusion: a table near the top of either ranking stays near the top
 _RELATIONAL_CUES = {"bought", "each", "per", "purchased", "sold", "with", "whose"}
 _COPY_ALIASES = {
     "arch": {"archive", "archived"},
@@ -23,7 +23,7 @@ _COPY_ALIASES = {
 
 @dataclass
 class PromptContext:
-    tables: dict[str, list[str]]                   # table -> column names to show, in order
+    tables: dict[str, list[str]]  # table -> column names to show, in order
     joins: list[Relationship] = field(default_factory=list)
     terminals: list[str] = field(default_factory=list)
     unconnected_terminals: list[str] = field(default_factory=list)
@@ -50,8 +50,12 @@ class PromptContext:
             for c in cols:
                 cp = t.columns[c]
                 hint = cp.hint() if hints else ""
-                shown.append(f"{c} ({cp.type})" + (f" [{hint}]" if hint else "") + (" key" if cp.kind is ColumnKind.KEY else "")
-                             + (" indexed" if cp.indexed else ""))
+                shown.append(
+                    f"{c} ({cp.type})"
+                    + (f" [{hint}]" if hint else "")
+                    + (" key" if cp.kind is ColumnKind.KEY else "")
+                    + (" indexed" if cp.indexed else "")
+                )
             lines.append("    " + ", ".join(shown))
         if self.joins:
             lines.append("Joins:")
@@ -63,9 +67,13 @@ class ContextAssembler:
     """Chooses the tables (the most relevant ones, joined through the relationship graph)
     and, per table, the columns: join keys always, the rest ranked by relevance."""
 
-    def __init__(self, service: ProfileService,
-                 rank_columns: Callable[[dict[str, list[str]], str, int], dict[str, list[str]]] | None = None,
-                 max_tables: int | None = None, max_columns: int = 12):
+    def __init__(
+        self,
+        service: ProfileService,
+        rank_columns: Callable[[dict[str, list[str]], str, int], dict[str, list[str]]] | None = None,
+        max_tables: int | None = None,
+        max_columns: int = 12,
+    ):
         self._svc, self._rank = service, rank_columns
         self._max_tables, self._max_columns = max_tables, max_columns
 
@@ -97,7 +105,8 @@ class ContextAssembler:
         said = set(re.findall(r"[a-z0-9]+", question.lower()))
         return any(
             t in said or bool(_COPY_ALIASES.get(t, set()) & said)
-            for t in name_tokens(table) if t.isdigit() or t in COPY_WORDS
+            for t in name_tokens(table)
+            if t.isdigit() or t in COPY_WORDS
         )
 
     def ranked(self, question: str, ranked_tables: list[str]) -> list[str]:
@@ -133,7 +142,7 @@ class ContextAssembler:
                 return sorted(selected, key=lambda t: (distances.get(t, float("inf")), rank[t]))
             return selected
 
-        roots = ranked[:min(12, len(ranked))]
+        roots = ranked[: min(12, len(ranked))]
         best_distances: dict[str, float] = {}
         best_score = (-1, 0)
         for root_rank, root in enumerate(roots):
@@ -148,18 +157,12 @@ class ContextAssembler:
 
         selected: list[str] = []
         for concept in sorted(named_concepts):
-            candidates = [
-                table for table in ranked
-                if concept in named.get(table, set())
-            ]
+            candidates = [table for table in ranked if concept in named.get(table, set())]
             supported = [table for table in candidates if best_distances.get(table, float("inf")) < float("inf")]
             selected.extend((supported or candidates)[:2])
 
         for concept in matched_concepts - named_concepts:
-            candidates = [
-                table for table in ranked
-                if concept in columns.get(table, set())
-            ]
+            candidates = [table for table in ranked if concept in columns.get(table, set())]
             supported = [table for table in candidates if best_distances.get(table, float("inf")) < float("inf")]
             selected.extend((supported or candidates)[:1])
 
@@ -169,8 +172,7 @@ class ContextAssembler:
         """The tables to describe to a model that picks: all of them when the database is small,
         else the `limit` best (a database with thousands of tables is narrowed first)."""
         best = self.ranked(question, ranked_tables)
-        visible = [t for t in self._svc.profile.tables
-                   if t not in self._svc.copies or self._asked_for(t, question)]
+        visible = [t for t in self._svc.profile.tables if t not in self._svc.copies or self._asked_for(t, question)]
         if len(visible) <= limit:
             return best + [t for t in visible if t not in set(best)]
         return best[:limit]
@@ -189,9 +191,10 @@ class ContextAssembler:
         graph knows how. Otherwise the code's own choice (terminals), with the same rule: a table
         chosen is never silently dropped because no join path to it is known."""
         known = self._svc.profile.tables
-        terminals = list(dict.fromkeys(t for t in picked or () if t in known)) \
-            or self.terminals(question, ranked_tables)
-        self._svc.learn_joins(terminals)   # a join no name suggests may be in the data
+        terminals = list(dict.fromkeys(t for t in picked or () if t in known)) or self.terminals(
+            question, ranked_tables
+        )
+        self._svc.learn_joins(terminals)  # a join no name suggests may be in the data
         names, _tree_joins = self._svc.graph.connect(terminals, self._max_tables)
         unconnected = [t for t in terminals if t not in names]
         names = names + [t for t in terminals if t not in names]
@@ -199,13 +202,17 @@ class ContextAssembler:
             names = [t for t in ranked_tables if t in self._svc.profile.tables][:1]
         included = set(names)
         joins = [
-            relationship for relationship in self._svc.profile.relationships
+            relationship
+            for relationship in self._svc.profile.relationships
             if relationship.from_table in included and relationship.to_table in included
         ]
         join_cols = {(t, c) for j in joins for t, c in ((j.from_table, j.from_column), (j.to_table, j.to_column))}
         candidates = {n: list(self._svc.table(n).columns) for n in names}
-        ranked = self._rank(candidates, question, self._max_columns) if self._rank else \
-            {n: cols[:self._max_columns] for n, cols in candidates.items()}
+        ranked = (
+            self._rank(candidates, question, self._max_columns)
+            if self._rank
+            else {n: cols[: self._max_columns] for n, cols in candidates.items()}
+        )
         tables = {}
         for n in names:
             keep = [c for c in candidates[n] if (n, c) in join_cols]
