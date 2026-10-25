@@ -83,7 +83,7 @@ DB_QUERY_TIMEOUT = int(os.getenv("DB_QUERY_TIMEOUT_SECONDS", 30))
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if DEV_MODE:
-        print("[sql-agent] WARNING: DEV_MODE=true: the web app accepts any bearer text as a user id. Use it on your own machine only.", file=sys.stderr)
+        print("[queryatlas] WARNING: DEV_MODE=true: the web app accepts any bearer text as a user id. Use it on your own machine only.", file=sys.stderr)
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(_PROCESS_POOL, _warm_embed_model)
     yield
@@ -625,7 +625,7 @@ async def connect(req: ConnectRequest, user_id: str = Depends(get_current_user))
             if not was_open and _connections.get(user_id, ck) is None:
                 _close_connection(ck)
             # Never the driver's text: it can quote the address or credentials.
-            print(f"[sql-agent] connect failed: {type(e).__name__}", file=sys.stderr)
+            print(f"[queryatlas] connect failed: {type(e).__name__}", file=sys.stderr)
             yield _evt({"error": _connection_failure_message(req.db_type, e)})
 
     return StreamingResponse(
@@ -1392,7 +1392,7 @@ async def auth_login(body: AuthRequest):
     ok = POLICY.verify_account(user, body.password)
     record_sign_in(user, ok)
     if not ok:
-        print(f"[sql-agent] failed web sign-in for {user!r}", file=sys.stderr)
+        print(f"[queryatlas] failed web sign-in for {user!r}", file=sys.stderr)
         raise HTTPException(status_code=401, detail={"message": "Incorrect username or password."})
     token = POLICY.issue_session_token(user)
     return {"user": user, "role": POLICY.role_of(user), "token": token}

@@ -117,13 +117,13 @@ def _user_can_write(user: str | None = None, local: bool | None = None) -> bool:
     return POLICY.can(user or _request_user(), rbac.WRITE, _is_local_call() if local is None else local)
 
 
-class SqlAgentMCPServer(Server):
+class QueryAtlasMCPServer(Server):
     def create_initialization_options(self, notification_options=None, experimental_capabilities=None):
         options = notification_options or NotificationOptions(tools_changed=True)
         return super().create_initialization_options(options, experimental_capabilities)
 
 
-server = SqlAgentMCPServer("sql-agent")
+server = QueryAtlasMCPServer("queryatlas")
 _mcp_sessions: dict[int, tuple[Any, str, bool]] = {}
 _policy_watch_task: asyncio.Task | None = None
 _policy_watch_fingerprint = ""
@@ -155,7 +155,7 @@ async def _watch_tool_permissions() -> None:
             try:
                 await session.send_tool_list_changed()
             except Exception as exc:
-                print(f"[sql-agent] could not notify MCP client of permission change: {exc}", file=sys.stderr)
+                print(f"[queryatlas] could not notify MCP client of permission change: {exc}", file=sys.stderr)
                 _mcp_sessions.pop(key, None)
 
 
@@ -321,7 +321,7 @@ def _audit(tool: str, sid: str, sql: str, ok: bool, rows: int | None = None,
         with open(AUDIT_LOG, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, default=str) + "\n")
     except OSError as e:
-        print(f"[sql-agent] AUDIT WRITE FAILED ({e}): {json.dumps(entry, default=str)}", file=sys.stderr)
+        print(f"[queryatlas] AUDIT WRITE FAILED ({e}): {json.dumps(entry, default=str)}", file=sys.stderr)
 
 
 # ── Glossary: human notes per database ("Account_Ref is the card number") ──
@@ -365,7 +365,7 @@ def _table_keys(sid: str, tables: list[str]) -> dict:
             try:
                 info = mdb[t].index_information()
             except Exception as e:
-                print(f"[sql-agent] index metadata unavailable for {t}: {e}", file=sys.stderr)
+                print(f"[queryatlas] index metadata unavailable for {t}: {e}", file=sys.stderr)
                 info = {}
             cache[t] = {"primary_key": ["_id"],
                         "indexes": [[f for f, _ in v["key"]] for name, v in info.items() if name != "_id_"],
@@ -384,7 +384,7 @@ def _table_keys(sid: str, tables: list[str]) -> dict:
                 cols = insp.get_columns(t)
                 pk = insp.get_pk_constraint(t).get("constrained_columns") or []
             except Exception as e:
-                print(f"[sql-agent] catalog metadata unavailable for {t}: {e}", file=sys.stderr)
+                print(f"[queryatlas] catalog metadata unavailable for {t}: {e}", file=sys.stderr)
                 cache[t] = {}
                 continue
             entry = {"primary_key": pk,
@@ -551,7 +551,7 @@ async def list_tools() -> list[types.Tool]:
                         "enum": ["auto", "server", "client"],
                         "default": "",
                         "description": (
-                            "Who generates SQL for this session: 'server' (SQL-Agent's AI in 1 round-trip via query_database), "
+                            "Who generates SQL for this session: 'server' (QueryAtlas's AI in 1 round-trip via query_database), "
                             "'client' (the MCP client AI writes SQL via get_query_context + run_sql), or 'auto'. "
                             "If omitted, ask the user which they prefer and pass it here or call set_sql_generator."
                         ),
@@ -735,7 +735,7 @@ async def list_tools() -> list[types.Tool]:
             name="set_sql_generator",
             description=(
                 "Set the user's choice for who generates SQL in MCP: "
-                "'server' (SQL-Agent's own LLM generates, reviews, and executes SQL in 1 round-trip via query_database) "
+                "'server' (QueryAtlas's own LLM generates, reviews, and executes SQL in 1 round-trip via query_database) "
                 "or 'client' (the MCP client LLM — Claude, Cursor, Copilot — calls get_query_context, writes SQL itself, "
                 "and executes it via run_sql), or 'auto'. Ask the user which mode they want after connecting, then call this."
             ),
@@ -965,7 +965,7 @@ async def _ask_password(info: ConnectionInfo) -> str | None:
             requestedSchema={"type": "object", "properties": {"password": {"type": "string", "title": "Password"}},
                              "required": ["password"]})
     except Exception as e:
-        print(f"[sql-agent] password form unavailable: {e}", file=sys.stderr)
+        print(f"[queryatlas] password form unavailable: {e}", file=sys.stderr)
         return None
     if result.action != "accept" or not (result.content or {}).get("password"):
         return None
@@ -1177,7 +1177,7 @@ async def _ask_sql_generator(default: str = "server") -> str | None:
         result = await session.elicit(
             message=(
                 "Who should generate SQL queries for this database?\n"
-                "• server: SQL-Agent's AI (1 round-trip via query_database)\n"
+                "• server: QueryAtlas's AI (1 round-trip via query_database)\n"
                 "• client: Your MCP assistant writes SQL (2 round-trips via get_query_context + run_sql)"
             ),
             requestedSchema={
@@ -1421,7 +1421,7 @@ async def _open_connection(args: dict) -> list[types.TextContent]:
     if choice_needed:
         hints.append(
             "Ask the user which AI should generate SQL for this session: "
-            "(1) 'server' — SQL-Agent's AI generates, reviews, and executes SQL in 1 round-trip via query_database, or "
+            "(1) 'server' — QueryAtlas's AI generates, reviews, and executes SQL in 1 round-trip via query_database, or "
             "(2) 'client' — you (the MCP client AI) write SQL via get_query_context + run_sql. "
             "Then call set_sql_generator(mode='server' or 'client')."
         )
@@ -1444,7 +1444,7 @@ async def _open_connection(args: dict) -> list[types.TextContent]:
         "sql_generator_mode": _sql_generators.get(sid) or POLICY.sql_generator(),
         "sql_generator_choice_needed": choice_needed,
         "sql_generator_options": {
-            "server": "SQL-Agent Server AI · 1 round-trip (call query_database)",
+            "server": "QueryAtlas Server AI · 1 round-trip (call query_database)",
             "client": "MCP Client AI · 2 round-trips (call get_query_context + run_sql)",
         },
         "workflow_hint": workflow_hint,
@@ -1718,7 +1718,7 @@ async def _confirm_write(sid: str, sql: str, dry_run: bool) -> bool:
                              "required": ["confirm"]},
         )
     except Exception as e:
-        print(f"[sql-agent] write confirmation unavailable: {e}", file=sys.stderr)
+        print(f"[queryatlas] write confirmation unavailable: {e}", file=sys.stderr)
         return False
     return result.action == "accept" and str((result.content or {}).get("confirm", "")).strip().upper() == "YES"
 
@@ -1786,7 +1786,7 @@ async def _execute_write(args: dict) -> list[types.TextContent]:
     session = _require_session(sid)
 
     if not _writes_enabled():
-        return _err("Writes are disabled by an administrator in SQL-Agent Settings.", ErrCode.PERMISSION_DENIED)
+        return _err("Writes are disabled by an administrator in QueryAtlas Settings.", ErrCode.PERMISSION_DENIED)
     if not _user_can_write():
         return _err("Your account no longer has sql.write permission.", ErrCode.PERMISSION_DENIED)
     if not session.get("allow_writes"):
@@ -2364,7 +2364,7 @@ async def _describe_capabilities(args: dict) -> list[types.TextContent]:
     open_connections = [k for k in (*_engines, *_mongos, *_cassandras) if k.startswith(prefix)]
     gen = _effective_sql_generator(current or sid)
     return _ok({
-        "server":          "sql-agent",
+        "server":          "queryatlas",
         "version":         __version__,
         "session_id":      sid,
         "connected":       connected_db is not None,
@@ -2789,11 +2789,11 @@ def _serve_http(bind: str) -> None:
     global _HOSTED
     _HOSTED = True
     host, _, port = bind.rpartition(":")
-    print("[sql-agent] Hosted: database connections must be encrypted; hosts on private/internal networks are "
+    print("[queryatlas] Hosted: database connections must be encrypted; hosts on private/internal networks are "
           "refused unless listed in MCP_ALLOWED_HOSTS; SQLite only inside MCP_SQLITE_DIR; passwords only "
           "through the connection form.", file=sys.stderr)
     app = build_http_mcp_app()
-    print(f"[sql-agent] HTTP mode: http://{host or '0.0.0.0'}:{port or 8765}/mcp", file=sys.stderr)
+    print(f"[queryatlas] HTTP mode: http://{host or '0.0.0.0'}:{port or 8765}/mcp", file=sys.stderr)
     uvicorn.run(app, host=host or "0.0.0.0", port=int(port or 8765), log_level="info")
 
 
@@ -2808,12 +2808,13 @@ def _install_claude_code() -> None:
         sys.exit("Claude Code CLI ('claude') is not on PATH. Install Claude Code first, then rerun this.")
     user = sys.argv[sys.argv.index("--user") + 1] if "--user" in sys.argv[:-1] else MCP_USER_ID
     # Replaces an earlier entry (stdio or http) of the same name; "not found" on a first install is expected.
-    subprocess.run([claude, "mcp", "remove", "sql-agent", "-s", "user"], capture_output=True)
-    subprocess.run([claude, "mcp", "add", "sql-agent", "-s", "user", "-e", "PYTHONUTF8=1", "-e", f"MCP_USER_ID={user}",
+    subprocess.run([claude, "mcp", "remove", "queryatlas", "-s", "user"], capture_output=True)
+    subprocess.run([claude, "mcp", "remove", "sql-agent", "-s", "user"], capture_output=True)   # pre-rename registration
+    subprocess.run([claude, "mcp", "add", "queryatlas", "-s", "user", "-e", "PYTHONUTF8=1", "-e", f"MCP_USER_ID={user}",
                     "--", sys.executable, os.path.join(PROJECT_ROOT, "mcp_server.py")], check=True)
     if not os.path.exists(os.path.join(PROJECT_ROOT, ".env")):
         print("Optional: copy .env.example to .env for database passwords and an LLM key.")
-    print(f"Registered sql-agent for Claude Code as user '{user}'. Restart Claude Code, then check: claude mcp list")
+    print(f"Registered queryatlas for Claude Code as user '{user}'. Restart Claude Code, then check: claude mcp list")
 
 
 def cli() -> None:

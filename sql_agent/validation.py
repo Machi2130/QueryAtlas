@@ -267,7 +267,7 @@ def parse_write(sql: str, flavor: str, allow_ddl: bool) -> tuple[exp.Expression,
                                    + (", CREATE, ALTER, DROP, TRUNCATE" if allow_ddl else "")
                                    + " only. Use run_sql for SELECT.")
     if is_ddl and not allow_ddl:
-        raise QueryValidationError("DDL is disabled by an administrator in SQL-Agent Settings.")
+        raise QueryValidationError("DDL is disabled by an administrator in QueryAtlas Settings.")
     if isinstance(tree, (exp.Update, exp.Delete)):
         where = tree.args.get("where")
         # A condition with no column in it (WHERE 1=1, WHERE TRUE) matches every row.
