@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 940" width="1200" height="940" font-family="'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" role="img" aria-labelledby="t d">
-<title id="t">SQL-Agent: four locks between any AI and your data</title><desc id="d">Questions from developers (MCP) and teams (web app) pass four rings before reaching the databases: sign-in and roles, the read-only validator, the tenant filter and encrypted connections. The AI model and the knowledge layer help write the query, every request is audited, and an unsafe query is stopped at the validator.</desc>
+<title id="t">QueryAtlas: four locks between any AI and your data</title><desc id="d">Questions from developers (MCP) and teams (web app) pass four rings before reaching the databases: sign-in and roles, the read-only validator, the tenant filter and encrypted connections. The AI model and the knowledge layer help write the query, every request is audited, and an unsafe query is stopped at the validator.</desc>
 <defs>
   <radialGradient id="bg" cx="50%" cy="53%" r="65%"><stop offset="0" stop-color="#131a26"/><stop offset="1" stop-color="#0b0d12"/></radialGradient>
   <radialGradient id="core" cx="50%" cy="40%" r="60%"><stop offset="0" stop-color="#3a2f12"/><stop offset="1" stop-color="#17140c"/></radialGradient>
@@ -17,7 +17,7 @@
   @media (prefers-reduced-motion: reduce) { .spin,.flow,.breathe { animation: none; } }
 </style>
 <rect width="1200" height="940" rx="20" fill="url(#bg)"/><rect width="1200" height="940" rx="20" fill="url(#stars)"/>
-<text x="60" y="78" font-size="42" fill="#f1f4f8" font-weight="800" text-anchor="start" letter-spacing="4" >SQL-AGENT</text>
+<text x="60" y="78" font-size="42" fill="#f1f4f8" font-weight="800" text-anchor="start" letter-spacing="4" >QUERYATLAS</text>
 <text x="62" y="112" font-size="18" fill="#93a0b0" font-weight="400" text-anchor="start" letter-spacing="0" >Four locks between any AI and your organisation's data</text>
 <rect x="62" y="128" width="64" height="4" rx="2" fill="#3ec1d3"/>
 <g fill="none" stroke-linecap="round">

@@ -241,7 +241,7 @@ def fetch_foreign_keys(conn, db_type: str, schema_dict: dict) -> list[dict]:
                 WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = current_schema()
             """)).fetchall()
     except Exception as e:
-        print(f"[sql-agent] foreign key extraction failed ({db_type}): {e}", file=sys.stderr)
+        print(f"[queryatlas] foreign key extraction failed ({db_type}): {e}", file=sys.stderr)
         return []
     known = {t.lower(): t for t in schema_dict}
     fks: list[dict] = []
@@ -401,7 +401,7 @@ def estimate_rows(conn, db_type: str, table: str) -> int | None:
         else:
             return None
     except Exception as e:
-        print(f"[sql-agent] row estimate for {table} unavailable: {e}", file=sys.stderr)
+        print(f"[queryatlas] row estimate for {table} unavailable: {e}", file=sys.stderr)
         return None
     return int(row[0]) if row and row[0] is not None and int(row[0]) >= 0 else None
 
@@ -425,7 +425,7 @@ def fetch_primary_keys(conn, db_type: str, schema_dict: dict) -> dict[str, list[
                  AND kcu.table_schema = tc.table_schema
                 WHERE tc.constraint_type = 'PRIMARY KEY' {scope}""")).fetchall()
     except Exception as e:
-        print(f"[sql-agent] primary key extraction failed ({db_type}): {e}", file=sys.stderr)
+        print(f"[queryatlas] primary key extraction failed ({db_type}): {e}", file=sys.stderr)
         return {}
     known = {t.lower(): t for t in schema_dict}
     pks: dict[str, list[tuple[int, str]]] = {}

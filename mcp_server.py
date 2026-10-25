@@ -1,4 +1,4 @@
-"""SQL-Agent launcher.
+"""QueryAtlas launcher.
 
     python mcp_server.py                      # stdio MCP server (what `claude mcp add ... -- python mcp_server.py` runs)
     python mcp_server.py --install            # register it with Claude Code (stdio, this interpreter and path)
