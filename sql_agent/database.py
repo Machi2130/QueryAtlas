@@ -5,18 +5,22 @@ from __future__ import annotations
 import datetime
 import decimal
 import json
+import logging
 import os
 import re
-import sys
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import URL
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 
+from .config import settings
 from .connections import MONGO_SRV, mongo_srv_name
 from .validation import is_sensitive
+
+log = logging.getLogger(__name__)
 
 try:
     from bson import ObjectId
@@ -26,6 +30,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════════════
 #  CONNECTION POOL — production SQLAlchemy config
 # ═══════════════════════════════════════════════════════════════
+
 
 def _make_engine(url, connect_args: dict | None = None):
     """
@@ -66,6 +71,7 @@ def _explicit_sqlite_transactions(engine) -> None:
     """Python's sqlite3 opens a transaction on its own only before a statement that starts with
     INSERT/UPDATE/DELETE/REPLACE: 'WITH ... DELETE' or DDL ran outside one, so a rollback (a dry
     run) did not undo it. SQLAlchemy's recipe: the driver stops guessing and BEGIN is explicit."""
+
     @event.listens_for(engine, "connect")
     def _no_driver_transactions(dbapi_connection, _record):
         dbapi_connection.isolation_level = None
@@ -84,23 +90,35 @@ def _connection_failure_message(db_type: str, error: Exception) -> str:
             "to check server TLS support, the certificate, and the installed client driver. If the server "
             "uses its own (self-signed) certificate, tick 'Trust this server's certificate'."
         )
-    if any(term in detail for term in ("login failed", "authentication failed", "password authentication failed",
-                                      "access denied", "18456")):
+    if any(
+        term in detail
+        for term in (
+            "login failed",
+            "authentication failed",
+            "password authentication failed",
+            "access denied",
+            "18456",
+        )
+    ):
         return (
             f"The {db_type} server rejected the login. Verify the username, password, authentication mode, "
             "and database access."
         )
-    if any(term in detail for term in ("driver not found", "data source name not found", "no module named",
-                                      "not installed")):
+    if any(
+        term in detail
+        for term in ("driver not found", "data source name not found", "no module named", "not installed")
+    ):
         return f"The required {db_type} driver is unavailable. Install or configure the database client driver."
     return (
         f"Could not connect to {db_type}. Check the host, port, database name, network access, "
         "and database credentials."
     )
 
+
 # ═══════════════════════════════════════════════════════════════
 #  SERIALIZATION
 # ═══════════════════════════════════════════════════════════════
+
 
 def serialize_value(v: Any) -> Any:
     if v is None:
@@ -136,13 +154,13 @@ def _limit_statement_time(conn, seconds: int) -> Callable[[], None]:
         raw.set_progress_handler(lambda: 1 if time.monotonic() > deadline else 0, 10_000)
         return lambda: raw.set_progress_handler(None, 0)
     if dialect == "postgresql":
-        conn.exec_driver_sql(f"SET LOCAL statement_timeout = {ms}")   # ends with the transaction
+        conn.exec_driver_sql(f"SET LOCAL statement_timeout = {ms}")  # ends with the transaction
     elif dialect in ("mysql", "mariadb"):
-        for var, value in (("MAX_EXECUTION_TIME", ms), ("max_statement_time", seconds)):   # MySQL, MariaDB
+        for var, value in (("MAX_EXECUTION_TIME", ms), ("max_statement_time", seconds)):  # MySQL, MariaDB
             try:
                 conn.exec_driver_sql(f"SET SESSION {var} = {value}")
                 return lambda: conn.exec_driver_sql(f"SET SESSION {var} = 0")
-            except DBAPIError:   # unknown variable on the other server family
+            except DBAPIError:  # unknown variable on the other server family
                 continue
     elif conn.dialect.driver == "pyodbc":
         raw = conn.connection.dbapi_connection
@@ -162,38 +180,44 @@ def fetch_read(engine, sql: str, max_rows: int, timeout_seconds: int) -> tuple[l
         finally:
             undo()
 
+
 # ═══════════════════════════════════════════════════════════════
 #  SCHEMA FETCHING
 # ═══════════════════════════════════════════════════════════════
 
+
 def fetch_sql_schema(conn, flavor: str) -> dict:
     schema: dict[str, list] = {}
     if flavor == "SQLite":
-        tables = conn.execute(
-            text("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-        ).fetchall()
+        tables = conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")).fetchall()
         for (tbl,) in tables:
             cols = conn.execute(text(f'PRAGMA table_info("{tbl}")')).fetchall()
             schema[tbl] = [f"{c[1]} ({c[2]})" for c in cols]
     elif flavor in ("MySQL", "MariaDB"):
-        rows = conn.execute(text(
-            "SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS "
-            "WHERE TABLE_SCHEMA=DATABASE() ORDER BY TABLE_NAME, ORDINAL_POSITION"
-        )).fetchall()
+        rows = conn.execute(
+            text(
+                "SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS "
+                "WHERE TABLE_SCHEMA=DATABASE() ORDER BY TABLE_NAME, ORDINAL_POSITION"
+            )
+        ).fetchall()
         for tbl, col, dtype in rows:
             schema.setdefault(tbl, []).append(f"{col} ({dtype})")
     elif flavor == "PostgreSQL":
-        rows = conn.execute(text(
-            "SELECT table_name, column_name, data_type FROM information_schema.columns "
-            "WHERE table_schema='public' ORDER BY table_name, ordinal_position"
-        )).fetchall()
+        rows = conn.execute(
+            text(
+                "SELECT table_name, column_name, data_type FROM information_schema.columns "
+                "WHERE table_schema='public' ORDER BY table_name, ordinal_position"
+            )
+        ).fetchall()
         for tbl, col, dtype in rows:
             schema.setdefault(tbl, []).append(f"{col} ({dtype})")
     elif flavor == "SQL Server":
-        rows = conn.execute(text(
-            "SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS "
-            "ORDER BY TABLE_NAME, ORDINAL_POSITION"
-        )).fetchall()
+        rows = conn.execute(
+            text(
+                "SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS "
+                "ORDER BY TABLE_NAME, ORDINAL_POSITION"
+            )
+        ).fetchall()
         for tbl, col, dtype in rows:
             schema.setdefault(tbl, []).append(f"{col} ({dtype})")
     # Credential/identity columns are left out of everything built from the schema
@@ -211,7 +235,8 @@ def fetch_foreign_keys(conn, db_type: str, schema_dict: dict) -> list[dict]:
                 for r in conn.execute(text(f'PRAGMA foreign_key_list("{t}")')).fetchall():
                     rows.append((t, r[3], r[2], r[4]))
         elif db_type == "SQL Server":
-            rows = conn.execute(text("""
+            rows = conn.execute(
+                text("""
                 SELECT CASE WHEN sp.name = 'dbo' THEN tp.name ELSE sp.name + '.' + tp.name END,
                        cp.name,
                        CASE WHEN sr.name = 'dbo' THEN tr.name ELSE sr.name + '.' + tr.name END,
@@ -223,15 +248,19 @@ def fetch_foreign_keys(conn, db_type: str, schema_dict: dict) -> list[dict]:
                 JOIN sys.tables  tr ON tr.object_id = fkc.referenced_object_id
                 JOIN sys.schemas sr ON sr.schema_id = tr.schema_id
                 JOIN sys.columns cr ON cr.object_id = tr.object_id AND cr.column_id = fkc.referenced_column_id
-            """)).fetchall()
+            """)
+            ).fetchall()
         elif db_type in ("MySQL", "MariaDB"):
-            rows = conn.execute(text("""
+            rows = conn.execute(
+                text("""
                 SELECT TABLE_NAME, COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME
                 FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
                 WHERE TABLE_SCHEMA = DATABASE() AND REFERENCED_TABLE_NAME IS NOT NULL
-            """)).fetchall()
+            """)
+            ).fetchall()
         elif db_type == "PostgreSQL":
-            rows = conn.execute(text("""
+            rows = conn.execute(
+                text("""
                 SELECT kcu.table_name, kcu.column_name, ccu.table_name, ccu.column_name
                 FROM information_schema.table_constraints tc
                 JOIN information_schema.key_column_usage kcu
@@ -239,9 +268,10 @@ def fetch_foreign_keys(conn, db_type: str, schema_dict: dict) -> list[dict]:
                 JOIN information_schema.constraint_column_usage ccu
                   ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
                 WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = current_schema()
-            """)).fetchall()
+            """)
+            ).fetchall()
     except Exception as e:
-        print(f"[queryatlas] foreign key extraction failed ({db_type}): {e}", file=sys.stderr)
+        log.warning(f"foreign key extraction failed ({db_type}): {e}")
         return []
     known = {t.lower(): t for t in schema_dict}
     fks: list[dict] = []
@@ -253,17 +283,24 @@ def fetch_foreign_keys(conn, db_type: str, schema_dict: dict) -> list[dict]:
 
 
 SQL_TYPES = {"SQLite", "MySQL", "MariaDB", "PostgreSQL", "SQL Server"}
-_DEFAULT_PORTS = {"MySQL": 3306, "MariaDB": 3306, "PostgreSQL": 5432, "SQL Server": 1433, "MongoDB": 27017,
-                  "Cassandra": 9042}
+_DEFAULT_PORTS = {
+    "MySQL": 3306,
+    "MariaDB": 3306,
+    "PostgreSQL": 5432,
+    "SQL Server": 1433,
+    "MongoDB": 27017,
+    "Cassandra": 9042,
+}
 
 
 def sqlserver_odbc_driver() -> str:
     """Prefer Driver 18 when installed, while retaining compatibility with Driver 17."""
-    configured = os.getenv("SQLSERVER_ODBC_DRIVER", "").strip()
+    configured = settings.sqlserver_odbc_driver
     if configured:
         return configured
     try:
         import pyodbc
+
         installed = set(pyodbc.drivers())
     except ImportError:
         installed = set()
@@ -273,16 +310,17 @@ def sqlserver_odbc_driver() -> str:
     return "ODBC Driver 18 for SQL Server"
 
 
-def sqlserver_connection_url(host: str, port: str | int, username: str, password: str,
-                             database: str, trust_server_certificate: bool = True) -> str:
+def sqlserver_connection_url(
+    host: str, port: str | int, username: str, password: str, database: str, trust_server_certificate: bool = True
+) -> str:
     """Build an SQLAlchemy URL with ODBC-escaped values, including special password chars.
     Always encrypted; the certificate is checked unless trust_server_certificate."""
     import urllib.parse
 
-    def odbc_value(value: str | int) -> str:   # in {} with '}' doubled: a ';' or '}' cannot end the attribute
+    def odbc_value(value: str | int) -> str:  # in {} with '}' doubled: a ';' or '}' cannot end the attribute
         return "{" + str(value).replace("}", "}}") + "}"
 
-    if not re.fullmatch(r"\d{1,5}", str(port)):   # it goes into an ODBC string: ';Encrypt=no' must not ride along
+    if not re.fullmatch(r"\d{1,5}", str(port)):  # it goes into an ODBC string: ';Encrypt=no' must not ride along
         raise ValueError("Port must be a number.")
     driver = "{" + sqlserver_odbc_driver().replace("}", "}}") + "}"
     connection = (
@@ -299,6 +337,7 @@ def _tls_context(trust_cert: bool):
     import ssl
 
     import certifi
+
     ctx = ssl.create_default_context(cafile=certifi.where())
     if trust_cert:
         ctx.check_hostname = False
@@ -306,9 +345,20 @@ def _tls_context(trust_cert: bool):
     return ctx
 
 
-def open_handle(db_type: str, *, host: str = "", port: str = "", username: str = "", password: str = "",
-                database: str = "", db_path: str = "", keyspace: str = "",
-                secure: bool = False, trust_cert: bool = False, address: str = ""):
+def open_handle(
+    db_type: str,
+    *,
+    host: str = "",
+    port: str = "",
+    username: str = "",
+    password: str = "",
+    database: str = "",
+    db_path: str = "",
+    keyspace: str = "",
+    secure: bool = False,
+    trust_cert: bool = False,
+    address: str = "",
+):
     """Open and prove a connection (a round trip, so a wrong password fails here).
     Returns an SQLAlchemy engine, a pymongo Database or a Cassandra session.
 
@@ -319,6 +369,7 @@ def open_handle(db_type: str, *, host: str = "", port: str = "", username: str =
     address: the IP that check_target approved; PostgreSQL connects to it while still verifying
     the certificate against host, so a DNS answer cannot change after the check."""
     import certifi
+
     p = port or _DEFAULT_PORTS.get(db_type, "")
     if db_type == "SQLite":
         if any(ch in str(db_path) for ch in "?#"):
@@ -327,19 +378,37 @@ def open_handle(db_type: str, *, host: str = "", port: str = "", username: str =
         engine = _make_engine(URL.create("sqlite", database=os.path.realpath(db_path) if db_path else db_path))
         _explicit_sqlite_transactions(engine)
     elif db_type == "SQL Server":
-        engine = _make_engine(sqlserver_connection_url(host, p, username, password, database,
-                                                       trust_server_certificate=not secure or trust_cert))
+        engine = _make_engine(
+            sqlserver_connection_url(
+                host, p, username, password, database, trust_server_certificate=not secure or trust_cert
+            )
+        )
     elif db_type in ("MySQL", "MariaDB"):
-        url = URL.create("mysql+pymysql", username=username or None, password=password or None,
-                         host=host, port=int(p), database=database or None)
-        tls = ({"ssl": {"verify_mode": False, "check_hostname": False}} if trust_cert
-               else {"ssl": {"ca": certifi.where(), "verify_mode": True, "check_hostname": True}})
+        url = URL.create(
+            "mysql+pymysql",
+            username=username or None,
+            password=password or None,
+            host=host,
+            port=int(p),
+            database=database or None,
+        )
+        tls = (
+            {"ssl": {"verify_mode": False, "check_hostname": False}}
+            if trust_cert
+            else {"ssl": {"ca": certifi.where(), "verify_mode": True, "check_hostname": True}}
+        )
         engine = _make_engine(url, tls if secure else None)
         if secure:
             _require_mysql_tls(engine)
     elif db_type == "PostgreSQL":
-        url = URL.create("postgresql+psycopg2", username=username or None, password=password or None,
-                         host=host, port=int(p), database=database or None)
+        url = URL.create(
+            "postgresql+psycopg2",
+            username=username or None,
+            password=password or None,
+            host=host,
+            port=int(p),
+            database=database or None,
+        )
         args: dict = {}
         if secure:
             # sslrootcert only when verifying: with a CA file present, 'require' would verify too
@@ -349,10 +418,18 @@ def open_handle(db_type: str, *, host: str = "", port: str = "", username: str =
         engine = _make_engine(url, args)
     elif db_type == "MongoDB":
         from pymongo import MongoClient
-        tls = ({"tls": True, "tlsAllowInvalidCertificates": True} if trust_cert
-               else {"tls": True, "tlsCAFile": certifi.where()}) if secure else {}
+
+        tls = (
+            (
+                {"tls": True, "tlsAllowInvalidCertificates": True}
+                if trust_cert
+                else {"tls": True, "tlsCAFile": certifi.where()}
+            )
+            if secure
+            else {}
+        )
         auth = {"username": username, "password": password, "authSource": "admin"} if username else {}
-        srv = mongo_srv_name(host)   # MongoDB Atlas: mongodb+srv://cluster0.xxxx.mongodb.net, no port
+        srv = mongo_srv_name(host)  # MongoDB Atlas: mongodb+srv://cluster0.xxxx.mongodb.net, no port
         target = {"host": f"{MONGO_SRV}{srv}/"} if srv else {"host": host, "port": int(p)}
         client = MongoClient(**target, serverSelectionTimeoutMS=5000, **auth, **tls)
         client.server_info()
@@ -360,6 +437,7 @@ def open_handle(db_type: str, *, host: str = "", port: str = "", username: str =
     elif db_type == "Cassandra":
         from cassandra.auth import PlainTextAuthProvider
         from cassandra.cluster import Cluster
+
         auth = PlainTextAuthProvider(username, password) if username else None
         tls = {"ssl_context": _tls_context(trust_cert), "ssl_options": {"server_hostname": host}} if secure else {}
         return Cluster([host], port=int(p), auth_provider=auth, **tls).connect(keyspace)
@@ -375,11 +453,11 @@ def close_handle(handle) -> None:
     Cassandra clients run background threads that keep their logged-in connections open."""
     if handle is None:
         return
-    if hasattr(handle, "dispose"):            # SQLAlchemy engine: closes the pooled connections
+    if hasattr(handle, "dispose"):  # SQLAlchemy engine: closes the pooled connections
         handle.dispose()
-    elif hasattr(handle, "client"):           # pymongo Database
+    elif hasattr(handle, "client"):  # pymongo Database
         handle.client.close()
-    elif hasattr(handle, "cluster"):          # Cassandra session
+    elif hasattr(handle, "cluster"):  # Cassandra session
         handle.cluster.shutdown()
 
 
@@ -387,11 +465,13 @@ def estimate_rows(conn, db_type: str, table: str) -> int | None:
     """Approximate row count from the catalog's statistics: no COUNT(*) scan of a big table.
     SQLite keeps no statistics; MAX(rowid) is an index lookup and close enough."""
     queries = {
-        "SQL Server": ("SELECT SUM(p.rows) FROM sys.partitions p JOIN sys.tables t ON t.object_id = p.object_id "
-                       "WHERE t.name = :t AND p.index_id IN (0, 1)"),
+        "SQL Server": (
+            "SELECT SUM(p.rows) FROM sys.partitions p JOIN sys.tables t ON t.object_id = p.object_id "
+            "WHERE t.name = :t AND p.index_id IN (0, 1)"
+        ),
         "PostgreSQL": "SELECT reltuples::bigint FROM pg_class WHERE relname = :t AND relkind = 'r'",
-        "MySQL":      "SELECT table_rows FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = :t",
-        "MariaDB":    "SELECT table_rows FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = :t",
+        "MySQL": "SELECT table_rows FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = :t",
+        "MariaDB": "SELECT table_rows FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = :t",
     }
     try:
         if db_type == "SQLite":
@@ -401,7 +481,7 @@ def estimate_rows(conn, db_type: str, table: str) -> int | None:
         else:
             return None
     except Exception as e:
-        print(f"[queryatlas] row estimate for {table} unavailable: {e}", file=sys.stderr)
+        log.warning(f"row estimate for {table} unavailable: {e}")
         return None
     return int(row[0]) if row and row[0] is not None and int(row[0]) >= 0 else None
 
@@ -415,17 +495,23 @@ def fetch_primary_keys(conn, db_type: str, schema_dict: dict) -> dict[str, list[
             for t in schema_dict:
                 rows += [(t, r[1], r[5]) for r in conn.execute(text(f'PRAGMA table_info("{t}")')).fetchall() if r[5]]
         elif db_type in ("SQL Server", "MySQL", "MariaDB", "PostgreSQL"):
-            scope = {"SQL Server": "", "PostgreSQL": "AND tc.table_schema = current_schema()",
-                     "MySQL": "AND tc.table_schema = DATABASE()", "MariaDB": "AND tc.table_schema = DATABASE()"}[db_type]
-            rows = conn.execute(text(f"""
+            scope = {
+                "SQL Server": "",
+                "PostgreSQL": "AND tc.table_schema = current_schema()",
+                "MySQL": "AND tc.table_schema = DATABASE()",
+                "MariaDB": "AND tc.table_schema = DATABASE()",
+            }[db_type]
+            rows = conn.execute(
+                text(f"""
                 SELECT kcu.table_name, kcu.column_name, kcu.ordinal_position
                 FROM information_schema.table_constraints tc
                 JOIN information_schema.key_column_usage kcu
                   ON kcu.constraint_name = tc.constraint_name AND kcu.table_name = tc.table_name
                  AND kcu.table_schema = tc.table_schema
-                WHERE tc.constraint_type = 'PRIMARY KEY' {scope}""")).fetchall()
+                WHERE tc.constraint_type = 'PRIMARY KEY' {scope}""")
+            ).fetchall()
     except Exception as e:
-        print(f"[queryatlas] primary key extraction failed ({db_type}): {e}", file=sys.stderr)
+        log.warning(f"primary key extraction failed ({db_type}): {e}")
         return {}
     known = {t.lower(): t for t in schema_dict}
     pks: dict[str, list[tuple[int, str]]] = {}
@@ -445,15 +531,18 @@ def _quote_table(tbl: str, flavor: str) -> str:
 
 def filter_empty_tables(conn, schema_dict: dict, flavor: str) -> tuple[dict, list]:
     active = {}
-    empty  = []
+    empty = []
     for tbl in schema_dict:
         try:
             if flavor == "SQL Server":
-                row = conn.execute(text(
-                    "SELECT SUM(p.rows) FROM sys.partitions p "
-                    "JOIN sys.tables t ON p.object_id = t.object_id "
-                    "WHERE t.name = :tbl AND p.index_id IN (0,1)"
-                ), {"tbl": tbl}).fetchone()
+                row = conn.execute(
+                    text(
+                        "SELECT SUM(p.rows) FROM sys.partitions p "
+                        "JOIN sys.tables t ON p.object_id = t.object_id "
+                        "WHERE t.name = :tbl AND p.index_id IN (0,1)"
+                    ),
+                    {"tbl": tbl},
+                ).fetchone()
             else:
                 quoted = _quote_table(tbl, flavor)
                 row = conn.execute(text(f"SELECT COUNT(*) FROM {quoted}")).fetchone()
@@ -462,16 +551,18 @@ def filter_empty_tables(conn, schema_dict: dict, flavor: str) -> tuple[dict, lis
                 active[tbl] = schema_dict[tbl]
             else:
                 empty.append(tbl)
-        except Exception:
+        except SQLAlchemyError as e:  # cannot count it: keep the table
+            log.debug(f"row count of {tbl} unavailable: {e}")
             active[tbl] = schema_dict[tbl]
     return active, empty
+
 
 def explain_statement(sql: str, flavor: str) -> str:
     """The plan query for an already-validated SELECT."""
     return {
         "PostgreSQL": f"EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) {sql}",
-        "MySQL":      f"EXPLAIN {sql}",
-        "MariaDB":    f"EXPLAIN {sql}",
-        "SQLite":     f"EXPLAIN QUERY PLAN {sql}",
+        "MySQL": f"EXPLAIN {sql}",
+        "MariaDB": f"EXPLAIN {sql}",
+        "SQLite": f"EXPLAIN QUERY PLAN {sql}",
         "SQL Server": f"SET SHOWPLAN_TEXT ON; {sql}",
     }.get(flavor, f"EXPLAIN {sql}")

@@ -13,13 +13,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
-import sys
-from typing import Any
 
 import chromadb
 import networkx as nx
+from chromadb.utils import embedding_functions
+
+log = logging.getLogger(__name__)
 
 
 class RAGStore:
@@ -35,22 +37,29 @@ class RAGStore:
     def __init__(self, user_id: str, persist_dir: str = ".chroma_data"):
         path = os.path.join(persist_dir, user_id)
         self._client = chromadb.PersistentClient(path=path)
+        # One embedding model, held here so a question is embedded once and searched in every collection.
+        self._embed = embedding_functions.DefaultEmbeddingFunction()
         self._ddl = self._client.get_or_create_collection(
-            name="ddl",
-            metadata={"hnsw:space": "cosine"},
+            name="ddl", metadata={"hnsw:space": "cosine"}, embedding_function=self._embed
         )
         self._docs = self._client.get_or_create_collection(
-            name="docs",
-            metadata={"hnsw:space": "cosine"},
+            name="docs", metadata={"hnsw:space": "cosine"}, embedding_function=self._embed
         )
         self._queries = self._client.get_or_create_collection(
-            name="queries",
-            metadata={"hnsw:space": "cosine"},
+            name="queries", metadata={"hnsw:space": "cosine"}, embedding_function=self._embed
         )
+
+    def embed(self, question: str) -> list[float]:
+        """The question's vector, computed once per lookup (the model pass is most of a lookup's time)."""
+        return [float(x) for x in self._embed([question])[0]]
+
+    @staticmethod
+    def _by(question: str, embedding: list[float] | None) -> dict:
+        return {"query_embeddings": [embedding]} if embedding is not None else {"query_texts": [question]}
 
     @staticmethod
     def _hash_id(text: str) -> str:
-        return hashlib.sha256(text.encode()).hexdigest()   # full digest: no two questions share an id
+        return hashlib.sha256(text.encode()).hexdigest()  # full digest: no two questions share an id
 
     def add_ddl(self, table_name: str, ddl: str) -> None:
         doc_id = self._hash_id(f"ddl:{table_name}")
@@ -65,14 +74,16 @@ class RAGStore:
         embedding model every time: 154 s for 523 tables. Returns how many tables were indexed."""
         done = 0
         for i in range(0, len(items), batch):
-            chunk = items[i:i + batch]
+            chunk = items[i : i + batch]
             try:
-                self._ddl.upsert(ids=[self._hash_id(f"ddl:{t}") for t, _ in chunk],
-                                 documents=[d for _, d in chunk],
-                                 metadatas=[{"table": t} for t, _ in chunk])
+                self._ddl.upsert(
+                    ids=[self._hash_id(f"ddl:{t}") for t, _ in chunk],
+                    documents=[d for _, d in chunk],
+                    metadatas=[{"table": t} for t, _ in chunk],
+                )
                 done += len(chunk)
-            except Exception as e:   # the rest of the schema is still indexed; say which part was not
-                print(f"[knowledge] could not index {len(chunk)} tables ({chunk[0][0]} ...): {e}", file=sys.stderr)
+            except Exception as e:  # the rest of the schema is still indexed; say which part was not
+                log.warning(f"could not index {len(chunk)} tables ({chunk[0][0]} ...): {e}")
         return done
 
     def add_documentation(self, doc: str) -> None:
@@ -105,43 +116,37 @@ class RAGStore:
 
     def verified_query_pairs(self) -> list[dict]:
         got = self._queries.get(where={"verified": True})
-        return [{"question": d, "sql": m.get("sql", "")} for d, m in zip(got["documents"], got["metadatas"])]
+        return [
+            {"question": d, "sql": m.get("sql", "")} for d, m in zip(got["documents"], got["metadatas"], strict=False)
+        ]
 
     def ddl_for(self, tables: list[str]) -> list[str]:
         if not tables:
             return []
         return self._ddl.get(ids=[self._hash_id(f"ddl:{t}") for t in tables])["documents"]
 
-    def search_ddl(self, question: str, n_results: int = 5) -> list[str]:
+    def search_ddl(self, question: str, n_results: int = 5, embedding: list[float] | None = None) -> list[str]:
         if self._ddl.count() == 0:
             return []
-        results = self._ddl.query(
-            query_texts=[question],
-            n_results=min(n_results, self._ddl.count()),
-        )
+        results = self._ddl.query(**self._by(question, embedding), n_results=min(n_results, self._ddl.count()))
         return results["documents"][0] if results["documents"] else []
 
-    def search_docs(self, question: str, n_results: int = 3) -> list[str]:
+    def search_docs(self, question: str, n_results: int = 3, embedding: list[float] | None = None) -> list[str]:
         if self._docs.count() == 0:
             return []
-        results = self._docs.query(
-            query_texts=[question],
-            n_results=min(n_results, self._docs.count()),
-        )
+        results = self._docs.query(**self._by(question, embedding), n_results=min(n_results, self._docs.count()))
         return results["documents"][0] if results["documents"] else []
 
-    def search_similar_queries(self, question: str, n_results: int = 3) -> list[dict]:
+    def search_similar_queries(
+        self, question: str, n_results: int = 3, embedding: list[float] | None = None
+    ) -> list[dict]:
         if self._queries.count() == 0:
             return []
-        results = self._queries.query(
-            query_texts=[question],
-            n_results=min(n_results, self._queries.count()),
-        )
+        results = self._queries.query(**self._by(question, embedding), n_results=min(n_results, self._queries.count()))
         pairs = []
         if results["documents"] and results["metadatas"]:
-            for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
-                pairs.append({"question": doc, "sql": meta.get("sql", ""),
-                              "verified": bool(meta.get("verified"))})
+            for doc, meta in zip(results["documents"][0], results["metadatas"][0], strict=False):
+                pairs.append({"question": doc, "sql": meta.get("sql", ""), "verified": bool(meta.get("verified"))})
         return pairs
 
     def stats(self) -> dict:
@@ -210,7 +215,7 @@ class KnowledgeEngine:
     def load_sia_context(self, db_name: str) -> dict | None:
         path = self._sia_cache_path(db_name)
         if os.path.exists(path):
-            with open(path, "r") as f:
+            with open(path) as f:
                 ctx = json.load(f)
             if not ctx.get("_error"):
                 return ctx
@@ -237,7 +242,8 @@ class KnowledgeEngine:
                 self.graph.add_node(col_id, node_type="column", data_type=col_type)
                 self.graph.add_edge(table, col_id, relation="has_column")
 
-        from .profile.inference import infer_joins   # one inference for the whole app
+        from .profile.inference import infer_joins  # one inference for the whole app
+
         for j in infer_joins(schema_dict):
             self.graph.add_edge(j["from"], j["to"], relation="foreign_key")
             (ft, fc), (tt, tc) = j["from"].split(".", 1), j["to"].split(".", 1)
@@ -249,15 +255,18 @@ class KnowledgeEngine:
         drop = [(u, v) for u, v, d in self.graph.edges(data=True) if d.get("relation") in ("foreign_key", "joins_to")]
         self.graph.remove_edges_from(drop)
         for r in relationships:
-            self.graph.add_edge(f"{r.from_table}.{r.from_column}", f"{r.to_table}.{r.to_column}", relation="foreign_key")
-            self.graph.add_edge(r.from_table, r.to_table, relation="joins_to", via_from=r.from_column, via_to=r.to_column)
-            self.graph.add_edge(r.to_table, r.from_table, relation="joins_to", via_from=r.to_column, via_to=r.from_column)
+            self.graph.add_edge(
+                f"{r.from_table}.{r.from_column}", f"{r.to_table}.{r.to_column}", relation="foreign_key"
+            )
+            self.graph.add_edge(
+                r.from_table, r.to_table, relation="joins_to", via_from=r.from_column, via_to=r.to_column
+            )
+            self.graph.add_edge(
+                r.to_table, r.from_table, relation="joins_to", via_from=r.to_column, via_to=r.from_column
+            )
 
     def find_join_path(self, table_a: str, table_b: str) -> list[dict] | None:
-        table_nodes = [
-            n for n, d in self.graph.nodes(data=True)
-            if d.get("node_type") == "table"
-        ]
+        table_nodes = [n for n, d in self.graph.nodes(data=True) if d.get("node_type") == "table"]
         if table_a not in table_nodes or table_b not in table_nodes:
             return None
 
@@ -270,11 +279,13 @@ class KnowledgeEngine:
         for i in range(len(path) - 1):
             edge_data = self.graph.get_edge_data(path[i], path[i + 1]) or {}
             if edge_data.get("relation") == "joins_to":
-                joins.append({
-                    "from": f"{path[i]}.{edge_data.get('via_from', 'id')}",
-                    "to": f"{path[i+1]}.{edge_data.get('via_to', 'id')}",
-                    "type": "LEFT",
-                })
+                joins.append(
+                    {
+                        "from": f"{path[i]}.{edge_data.get('via_from', 'id')}",
+                        "to": f"{path[i + 1]}.{edge_data.get('via_to', 'id')}",
+                        "type": "LEFT",
+                    }
+                )
         return joins if joins else None
 
     def find_all_join_paths(self, tables: list[str]) -> list[dict]:
@@ -284,7 +295,7 @@ class KnowledgeEngine:
         all_joins = []
         seen = set()
         for i, t1 in enumerate(tables):
-            for t2 in tables[i + 1:]:
+            for t2 in tables[i + 1 :]:
                 key = tuple(sorted([t1, t2]))
                 if key in seen:
                     continue
@@ -322,7 +333,8 @@ class KnowledgeEngine:
             }
 
         trained_tables = self.rag.add_ddl_many(
-            [(table, self._schema_to_ddl(table, columns, db_flavor)) for table, columns in schema_dict.items()])
+            [(table, self._schema_to_ddl(table, columns, db_flavor)) for table, columns in schema_dict.items()]
+        )
 
         return {
             "tables_trained": trained_tables,
@@ -351,16 +363,13 @@ class KnowledgeEngine:
 
         metrics = sia_context.get("metrics", {})
         if metrics:
-            doc = "Business metrics:\n" + "\n".join(
-                f"- {k}: {v}" for k, v in metrics.items() if v
-            )
+            doc = "Business metrics:\n" + "\n".join(f"- {k}: {v}" for k, v in metrics.items() if v)
             self.rag.add_documentation(doc)
 
         joins = sia_context.get("joins", [])
         if joins:
             doc = "Table relationships:\n" + "\n".join(
-                f"- {j['from']} joins to {j['to']} ({j['type']} JOIN)"
-                for j in joins
+                f"- {j['from']} joins to {j['to']} ({j['type']} JOIN)" for j in joins
             )
             self.rag.add_documentation(doc)
 
@@ -368,8 +377,7 @@ class KnowledgeEngine:
         try:
             self.rag.add_query_pair(question, sql, verified=verified)
         except Exception as e:
-            import sys
-            print(f"[knowledge] add_query_pair failed: {e}", file=sys.stderr)
+            log.warning(f"add_query_pair failed: {e}")
 
     def learn_user_feedback(self, question: str, sql: str, is_correct: bool, correction: str | None = None) -> None:
         """A human judged the answer: right -> verified example; wrong -> the bad pair is
@@ -396,26 +404,29 @@ class KnowledgeEngine:
         relevant_ddl = []
         relevant_docs = []
 
-        # Retrieval failures degrade the answer silently, so at least say so on stderr.
-        import sys
+        # The question is embedded once for the three searches. A failed search degrades the answer,
+        # so each one at least says so.
         try:
-            similar_queries = self.rag.search_similar_queries(question, n_results=3)
+            vector = self.rag.embed(question)
         except Exception as e:
-            print(f"[knowledge] search_similar_queries failed: {e}", file=sys.stderr)
+            log.warning(f"question embedding failed, searching by text: {e}")
+            vector = None
+        try:
+            similar_queries = self.rag.search_similar_queries(question, n_results=3, embedding=vector)
+        except Exception as e:
+            log.warning(f"search_similar_queries failed: {e}")
 
         try:
-            relevant_ddl = self.rag.search_ddl(question, n_results=5)
+            relevant_ddl = self.rag.search_ddl(question, n_results=5, embedding=vector)
         except Exception as e:
-            print(f"[knowledge] search_ddl failed: {e}", file=sys.stderr)
+            log.warning(f"search_ddl failed: {e}")
 
         try:
-            relevant_docs = self.rag.search_docs(question, n_results=3)
+            relevant_docs = self.rag.search_docs(question, n_results=3, embedding=vector)
         except Exception as e:
-            print(f"[knowledge] search_docs failed: {e}", file=sys.stderr)
+            log.warning(f"search_docs failed: {e}")
 
-        tables_mentioned = self._extract_tables_from_context(
-            relevant_ddl, similar_queries, question
-        )
+        tables_mentioned = self._extract_tables_from_context(relevant_ddl, similar_queries, question)
         join_paths = self.find_all_join_paths(tables_mentioned)
 
         related_tables = []
@@ -423,11 +434,7 @@ class KnowledgeEngine:
             related_tables.extend(self.get_related_tables(t, depth=1))
         all_tables = list(set(tables_mentioned + related_tables))
 
-        relevant_schema = {
-            t: self._schema_dict[t]
-            for t in all_tables
-            if t in self._schema_dict
-        }
+        relevant_schema = {t: self._schema_dict[t] for t in all_tables if t in self._schema_dict}
 
         return {
             "relevant_schema": relevant_schema,
@@ -443,18 +450,9 @@ class KnowledgeEngine:
     # ═══════════════════════════════════════════════════════
 
     def get_graph_stats(self) -> dict:
-        table_nodes = [
-            n for n, d in self.graph.nodes(data=True)
-            if d.get("node_type") == "table"
-        ]
-        col_nodes = [
-            n for n, d in self.graph.nodes(data=True)
-            if d.get("node_type") == "column"
-        ]
-        fk_edges = [
-            (u, v) for u, v, d in self.graph.edges(data=True)
-            if d.get("relation") == "foreign_key"
-        ]
+        table_nodes = [n for n, d in self.graph.nodes(data=True) if d.get("node_type") == "table"]
+        col_nodes = [n for n, d in self.graph.nodes(data=True) if d.get("node_type") == "column"]
+        fk_edges = [(u, v) for u, v, d in self.graph.edges(data=True) if d.get("relation") == "foreign_key"]
         rag_stats = self.rag.stats()
         return {
             "tables": len(table_nodes),
@@ -472,12 +470,14 @@ class KnowledgeEngine:
         for u, v, data in self.graph.edges(data=True):
             if data.get("relation") == "joins_to":
                 if u == table or v == table:
-                    relationships.append({
-                        "from_table": u,
-                        "to_table": v,
-                        "from_column": data.get("via_from"),
-                        "to_column": data.get("via_to"),
-                    })
+                    relationships.append(
+                        {
+                            "from_table": u,
+                            "to_table": v,
+                            "from_column": data.get("via_from"),
+                            "to_column": data.get("via_to"),
+                        }
+                    )
         return relationships
 
     # ═══════════════════════════════════════════════════════
@@ -487,14 +487,26 @@ class KnowledgeEngine:
     @staticmethod
     def _schema_to_ddl(table: str, columns: list, flavor: str) -> str:
         type_map = {
-            "int": "INTEGER", "bigint": "BIGINT", "smallint": "SMALLINT",
-            "varchar": "VARCHAR(255)", "text": "TEXT", "char": "CHAR(50)",
-            "decimal": "DECIMAL(18,2)", "numeric": "NUMERIC(18,2)",
-            "float": "FLOAT", "double": "DOUBLE", "real": "REAL",
-            "datetime": "DATETIME", "timestamp": "TIMESTAMP",
-            "date": "DATE", "time": "TIME",
-            "boolean": "BOOLEAN", "bit": "BIT",
-            "uuid": "UUID", "json": "JSON", "jsonb": "JSONB",
+            "int": "INTEGER",
+            "bigint": "BIGINT",
+            "smallint": "SMALLINT",
+            "varchar": "VARCHAR(255)",
+            "text": "TEXT",
+            "char": "CHAR(50)",
+            "decimal": "DECIMAL(18,2)",
+            "numeric": "NUMERIC(18,2)",
+            "float": "FLOAT",
+            "double": "DOUBLE",
+            "real": "REAL",
+            "datetime": "DATETIME",
+            "timestamp": "TIMESTAMP",
+            "date": "DATE",
+            "time": "TIME",
+            "boolean": "BOOLEAN",
+            "bit": "BIT",
+            "uuid": "UUID",
+            "json": "JSON",
+            "jsonb": "JSONB",
         }
         col_lines = []
         for col_def in columns:
@@ -507,9 +519,7 @@ class KnowledgeEngine:
 
         return f"CREATE TABLE {table} (\n" + ",\n".join(col_lines) + "\n);"
 
-    def _extract_tables_from_context(
-        self, ddl_list: list, query_list: list, question: str
-    ) -> list[str]:
+    def _extract_tables_from_context(self, ddl_list: list, query_list: list, question: str) -> list[str]:
         all_tables = set(self._schema_dict.keys())
         found = set()
 

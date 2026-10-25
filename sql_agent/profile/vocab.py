@@ -41,8 +41,7 @@ def matching_words(words: set[str]) -> set[str]:
 
 def question_words(question: str) -> set[str]:
     """Content words in a normalized form: 'categories' meets 'category'."""
-    return {normalize_word(w)
-            for w in re.findall(r"[a-z0-9_]+", question.lower()) if len(w) > 3}
+    return {normalize_word(w) for w in re.findall(r"[a-z0-9_]+", question.lower()) if len(w) > 3}
 
 
 def names_anything(question: str, schema: dict, notes: list[dict] = ()) -> bool:
@@ -53,8 +52,12 @@ def names_anything(question: str, schema: dict, notes: list[dict] = ()) -> bool:
     words = question_words(question)
     if any(words & question_words(n.get("note", "")) for n in notes):
         return True
-    vocab = {p for t, cols in schema.items()
-             for name in (t, *(c.split(" ")[0] for c in cols))
-             for raw in re.split(r"[_\s.]+", name.lower())
-             for p in (normalize_word(raw),) if len(p) >= 3}
+    vocab = {
+        p
+        for t, cols in schema.items()
+        for name in (t, *(c.split(" ")[0] for c in cols))
+        for raw in re.split(r"[_\s.]+", name.lower())
+        for p in (normalize_word(raw),)
+        if len(p) >= 3
+    }
     return any(w.startswith(v) or v.startswith(w) for w in words for v in vocab)

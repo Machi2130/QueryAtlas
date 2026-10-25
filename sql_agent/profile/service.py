@@ -14,11 +14,22 @@ from .models import DatabaseProfile, Relationship, TableProfile
 from .sampler import JoinChecker, ValueSampler
 from .vocab import matching_words, normalize_word
 
-MAX_LEARN_CHECKS = 40   # column pairs examined in the data per question, however many tables it names
+MAX_LEARN_CHECKS = 40  # column pairs examined in the data per question, however many tables it names
 
 COPY_WORDS = {
-    "arch", "archive", "archived", "bak", "backup", "bkp", "copy", "dump",
-    "hist", "old", "stg", "temp", "tmp",
+    "arch",
+    "archive",
+    "archived",
+    "bak",
+    "backup",
+    "bkp",
+    "copy",
+    "dump",
+    "hist",
+    "old",
+    "stg",
+    "temp",
+    "tmp",
 }
 
 
@@ -32,19 +43,33 @@ class ProfileService:
     a fresh one otherwise, and profiles each table's values the first time a question
     touches it (so a 2,000-table database costs nothing until it is asked about)."""
 
-    def __init__(self, profile: DatabaseProfile, sampler: ValueSampler | None = None,
-                 store: ProfileStore | None = None):
+    def __init__(
+        self, profile: DatabaseProfile, sampler: ValueSampler | None = None, store: ProfileStore | None = None
+    ):
         self.profile = profile
         self._sampler, self._store = sampler, store
         self._lock = threading.Lock()
-        self.picks: dict = {}    # question -> (tables, missing topics) the table picker chose
-        self._examined: set[frozenset] = set()   # table pairs already searched for a join in the data
-        self._keys = {c for r in profile.relationships for c in ((r.from_table, r.from_column), (r.to_table, r.to_column))}
+        self.picks: dict = {}  # question -> (tables, missing topics) the table picker chose
+        self._examined: set[frozenset] = set()  # table pairs already searched for a join in the data
+        self._keys = {
+            c for r in profile.relationships for c in ((r.from_table, r.from_column), (r.to_table, r.to_column))
+        }
 
     @classmethod
-    def open(cls, *, flavor: str, schema: dict, foreign_keys: list[dict], business_context: dict | None = None,
-             engine=None, folder: str | None = None, refresh: bool = False, sampler=None,
-             confirm=None, primary_keys: dict[str, list[str]] | None = None) -> "ProfileService":
+    def open(
+        cls,
+        *,
+        flavor: str,
+        schema: dict,
+        foreign_keys: list[dict],
+        business_context: dict | None = None,
+        engine=None,
+        folder: str | None = None,
+        refresh: bool = False,
+        sampler=None,
+        confirm=None,
+        primary_keys: dict[str, list[str]] | None = None,
+    ) -> ProfileService:
         """engine: an SQL database. Without one (MongoDB, Cassandra), sampler / confirm / primary_keys
         supply the same facts: value hints, data-confirmed joins and keys."""
         store = ProfileStore(folder) if folder else None
@@ -55,14 +80,18 @@ class ProfileService:
                 with engine.connect() as conn:
                     primary_keys = fetch_primary_keys(conn, flavor, schema)
                 checker = JoinChecker(engine, flavor)
-                profile = ProfileBuilder(flavor, schema, foreign_keys, business_context, primary_keys,
-                                         confirm=checker).build()
+                profile = ProfileBuilder(
+                    flavor, schema, foreign_keys, business_context, primary_keys, confirm=checker
+                ).build()
                 if checker.rejected:
-                    print(f"[profile] {len(checker.rejected)} name-guessed joins not confirmed by data, dropped",
-                          file=sys.stderr)
+                    print(
+                        f"[profile] {len(checker.rejected)} name-guessed joins not confirmed by data, dropped",
+                        file=sys.stderr,
+                    )
             else:
-                profile = ProfileBuilder(flavor, schema, foreign_keys, business_context, primary_keys,
-                                         confirm=confirm).build()
+                profile = ProfileBuilder(
+                    flavor, schema, foreign_keys, business_context, primary_keys, confirm=confirm
+                ).build()
             if store:
                 store.save(profile)
         return cls(profile, sampler or (ValueSampler(engine, flavor) if engine is not None else None), store)
@@ -82,11 +111,13 @@ class ProfileService:
             return False
         with self._lock:
             connected, _ = self.graph.connect(known, len(known) + 3)
-            bridges = [nb for t in known for nb in self.graph.neighbours(t)
-                       if nb in self.profile.tables and nb not in known]
+            bridges = [
+                nb for t in known for nb in self.graph.neighbours(t) if nb in self.profile.tables and nb not in known
+            ]
             targets = list(dict.fromkeys([*known, *bridges]))
-            pairs = list(dict.fromkeys(frozenset((a, b)) for a in known if a not in connected
-                                       for b in targets if b != a))
+            pairs = list(
+                dict.fromkeys(frozenset((a, b)) for a in known if a not in connected for b in targets if b != a)
+            )
             pairs = [p for p in pairs if p not in self._examined]
             if not pairs:
                 return False
@@ -110,19 +141,21 @@ class ProfileService:
             linked: set[frozenset] = set()
             found = []
             for ft, fc, tt, tc in checker(candidates):
-                if frozenset((ft, tt)) not in linked:     # one join per pair of tables
+                if frozenset((ft, tt)) not in linked:  # one join per pair of tables
                     linked.add(frozenset((ft, tt)))
                     found.append(Relationship(ft, fc, tt, tc, "learned"))
             if not found:
                 return False
             self.profile.relationships.extend(found)
-            self.profile.__dict__.pop("graph", None)      # rebuilt with the new joins on next use
+            self.profile.__dict__.pop("graph", None)  # rebuilt with the new joins on next use
             self._keys |= {c for r in found for c in ((r.from_table, r.from_column), (r.to_table, r.to_column))}
             if self._store:
                 self._store.save(self.profile)
-            print(f"[profile] learned {len(found)} join(s) from the data: "
-                  + ", ".join(f"{r.from_table}.{r.from_column} -> {r.to_table}.{r.to_column}" for r in found),
-                  file=sys.stderr)
+            print(
+                f"[profile] learned {len(found)} join(s) from the data: "
+                + ", ".join(f"{r.from_table}.{r.from_column} -> {r.to_table}.{r.to_column}" for r in found),
+                file=sys.stderr,
+            )
             return True
 
     @cached_property
@@ -141,7 +174,7 @@ class ProfileService:
             originals = [n for n, clean in members if clean]
             if len(members) < 2 or len(originals) != 1:
                 continue
-            cols = lambda n: {c.lower() for c in self.profile.tables[n].columns}   # noqa: E731
+            cols = lambda n: {c.lower() for c in self.profile.tables[n].columns}  # noqa: E731
             for name, _ in members:
                 a, b = cols(name), cols(originals[0])
                 if name != originals[0] and len(a & b) >= 0.8 * len(a | b):

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import re
 
-
 _TEXT_TYPES = ("char", "text", "guid", "uniqueidentifier", "string")
 _KEYLIKE = re.compile(r"(id|ref|reference|no|num|number|code|key|guid|email|mail|user|acct|account|to|from)$")
 
@@ -28,7 +27,7 @@ def _words(name: str) -> list[str]:
 
 
 def _same(a: str, b: str) -> bool:
-    return a == b or a.startswith(b) or b.startswith(a)   # cust ~ customer
+    return a == b or a.startswith(b) or b.startswith(a)  # cust ~ customer
 
 
 def infer_joins(schema_dict: dict) -> list:
@@ -46,7 +45,7 @@ def infer_joins(schema_dict: dict) -> list:
     def tables_named(p: str) -> set[str]:
         return {t for w in buckets.get(p[:3], ()) if _same(p, w) for t in by_word[w]}
 
-    columns: dict[str, dict[str, str]] = {}   # table -> lower name -> real name, built on first use
+    columns: dict[str, dict[str, str]] = {}  # table -> lower name -> real name, built on first use
 
     def column(table: str, lower: str) -> str | None:
         if table not in columns:
@@ -64,8 +63,8 @@ def infer_joins(schema_dict: dict) -> list:
             if not prefix:
                 continue
             per_word = [tables_named(p) for p in prefix]
-            candidates = set.intersection(*per_word)                      # table name contains every word
-            for t in set.union(*per_word):                                # or the whole table name is in the column
+            candidates = set.intersection(*per_word)  # table name contains every word
+            for t in set.union(*per_word):  # or the whole table name is in the column
                 if all(any(_same(w, p) for p in prefix) for w in table_words[t]) and table_words[t]:
                     candidates.add(t)
             for other in sorted(candidates - {tbl}):

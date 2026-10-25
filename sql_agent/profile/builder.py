@@ -6,13 +6,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from typing import Callable
+from collections.abc import Callable
 
 from .inference import infer_joins
 from .models import ColumnProfile, DatabaseProfile, Relationship, TableProfile, TableRole
 
-
-PROFILE_FORMAT = 3   # bump when the profile gains fields: stored profiles are then rebuilt
+PROFILE_FORMAT = 3  # bump when the profile gains fields: stored profiles are then rebuilt
 
 
 def schema_fingerprint(schema: dict) -> str:
@@ -26,9 +25,15 @@ class ProfileBuilder:
     Declared foreign keys come first; name-based inference fills in for databases that
     never declared them, marked as guessed."""
 
-    def __init__(self, flavor: str, schema: dict, foreign_keys: list[dict], business_context: dict | None = None,
-                 primary_keys: dict[str, list[str]] | None = None,
-                 confirm: Callable[[list[tuple[str, str, str, str]]], set] | None = None):
+    def __init__(
+        self,
+        flavor: str,
+        schema: dict,
+        foreign_keys: list[dict],
+        business_context: dict | None = None,
+        primary_keys: dict[str, list[str]] | None = None,
+        confirm: Callable[[list[tuple[str, str, str, str]]], set] | None = None,
+    ):
         """confirm([(from_table, from_column, to_table, to_column), ...]) -> the guesses the data
         confirms (declared foreign keys are never second-guessed). None = keep guesses."""
         self._flavor, self._schema = flavor, schema
@@ -38,22 +43,30 @@ class ProfileBuilder:
 
     def build(self) -> DatabaseProfile:
         relationships = self._relationships()
-        tables = {t: TableProfile(name=t, columns=self._columns(cols), primary_key=list(self._pks.get(t, [])))
-                  for t, cols in self._schema.items()}
+        tables = {
+            t: TableProfile(name=t, columns=self._columns(cols), primary_key=list(self._pks.get(t, [])))
+            for t, cols in self._schema.items()
+        }
         outgoing = {r.from_table for r in relationships}
         incoming = {r.to_table for r in relationships}
         roles = self._context.get("tables") if isinstance(self._context.get("tables"), dict) else {}
         for name, table in tables.items():
-            table.role = (TableRole.HEADER if name in outgoing and name in incoming else
-                          TableRole.DETAIL if name in outgoing else
-                          TableRole.LOOKUP if name in incoming else TableRole.STANDALONE)
+            table.role = (
+                TableRole.HEADER
+                if name in outgoing and name in incoming
+                else TableRole.DETAIL
+                if name in outgoing
+                else TableRole.LOOKUP
+                if name in incoming
+                else TableRole.STANDALONE
+            )
             table.description = str((roles.get(name) or {}).get("role") or "")
         return DatabaseProfile(self._flavor, schema_fingerprint(self._schema), tables, relationships)
 
     @staticmethod
     def _columns(cols: list[str]) -> dict[str, ColumnProfile]:
         out = {}
-        for c in cols:   # "name (TYPE)" as the schema readers produce it
+        for c in cols:  # "name (TYPE)" as the schema readers produce it
             name, _, rest = c.partition(" ")
             out[name] = ColumnProfile(name=name, type=rest.strip("()"))
         return out
@@ -71,9 +84,9 @@ class ProfileBuilder:
             for c in cols:
                 name = c.split(" ")[0]
                 if name.lower() == "id":
-                    continue   # every table's own key: two tables sharing the name 'id' say nothing about each other
+                    continue  # every table's own key: two tables sharing the name 'id' say nothing about each other
                 targets = [t for t in owners.get(name.lower(), []) if t != table]
-                if len(targets) == 1:   # several tables share that key name: ambiguous, guess nothing
+                if len(targets) == 1:  # several tables share that key name: ambiguous, guess nothing
                     joins.append({"from": f"{table}.{name}", "to": f"{targets[0]}.{self._pks[targets[0]][0]}"})
         return joins
 
@@ -95,9 +108,9 @@ class ProfileBuilder:
             if ft == tt or ft not in self._schema or tt not in self._schema:
                 continue
             if frozenset((ft, tt)) in linked or (ft, fc.lower()) in declared_cols:
-                continue   # a declared key already covers these tables / this column
+                continue  # a declared key already covers these tables / this column
             if self._pks.get(tt) and tc not in self._pks[tt]:
-                continue   # a reference points at the target's key, not at any same-named column
+                continue  # a reference points at the target's key, not at any same-named column
             candidates.append((ft, fc, tt, tc))
         candidates = list(dict.fromkeys(candidates))
         # The data's verdict: a column whose values are not the target's keys was named misleadingly.

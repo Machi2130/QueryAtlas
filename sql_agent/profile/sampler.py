@@ -9,34 +9,38 @@ from __future__ import annotations
 
 import datetime
 import decimal
-import os
+import logging
 import re
-import sys
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 
-from sqlalchemy import inspect as sa_inspect, text
+from sqlalchemy import inspect as sa_inspect
+from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlglot import exp
 
+from ..config import settings
 from ..database import estimate_rows
 from ..presentation import fmt_value
 from ..validation import SQLGLOT_DIALECT, is_sensitive
 from .models import ColumnKind, TableProfile
 
-PROMPT_VALUE_HINTS = os.getenv("PROMPT_VALUE_HINTS", "true").lower() not in ("0", "false", "no")
+log = logging.getLogger(__name__)
+
+PROMPT_VALUE_HINTS = settings.prompt_value_hints
 
 # Contact and identity columns are never listed; names pass only when few-valued
 # (region names yes, customer names no: those have hundreds of values).
-_NEVER_LIST = re.compile(r"(^|_)(id|no|num|email|phone|mobile|addr|address|card|account|acct|pan|aadhaar|ssn)$",
-                         re.IGNORECASE)
+_NEVER_LIST = re.compile(
+    r"(^|_)(id|no|num|email|phone|mobile|addr|address|card|account|acct|pan|aadhaar|ssn)$", re.IGNORECASE
+)
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}")
 
 
 # Rows of one column read to judge a join. Real data is skewed (on TBO two members own most emails and
 # transactions) and holds references that are not in the target, so the verdict weighs each value by its rows.
 READ_ROWS = 2000
-MAX_LOOKUP = 200   # distinct values looked up in the target, most frequent first
+MAX_LOOKUP = 200  # distinct values looked up in the target, most frequent first
 
 
 def _norm(v) -> str:
@@ -51,16 +55,23 @@ class JoinChecker:
     busy members and a tail of orphan references must not hide a real join; distinct values, so that one
     default value present in both tables cannot make a join."""
 
-    def __init__(self, engine, flavor: str, min_share: float = 0.8, min_distinct_share: float = 0.5,
-                 workers: int = 8, min_values: int = 1):
+    def __init__(
+        self,
+        engine,
+        flavor: str,
+        min_share: float = 0.8,
+        min_distinct_share: float = 0.5,
+        workers: int = 8,
+        min_values: int = 1,
+    ):
         """min_values: fewest distinct values a column must show to be judged (a flag column with
         three values is 'contained' in everything). Name-guessed joins have name evidence and use 1;
         joins looked for in the data alone use 10."""
         self._engine, self._dialect = engine, SQLGLOT_DIALECT.get(flavor)
         self._top = "TOP" if flavor == "SQL Server" else ""
         self._min_share, self._min_distinct_share, self._min_values = min_share, min_distinct_share, min_values
-        self._workers = 1 if flavor == "SQLite" else workers   # remote round trips dominate; SQLite is local
-        self.rejected: list[str] = []   # "from -> to: why" for every guess the data did not confirm
+        self._workers = 1 if flavor == "SQLite" else workers  # remote round trips dominate; SQLite is local
+        self.rejected: list[str] = []  # "from -> to: why" for every guess the data did not confirm
 
     def __call__(self, candidates: list[tuple[str, str, str, str]]) -> set:
         """Checks every guess, one column per task (its values read once), in parallel."""
@@ -83,7 +94,7 @@ class JoinChecker:
                 if why:
                     out.append((cand, False, why))
                 elif len(counts) < self._min_values:
-                    out.append((cand, False, f"only {len(counts)} distinct values to judge by"))   # too little to go on
+                    out.append((cand, False, f"only {len(counts)} distinct values to judge by"))  # too little to go on
                 else:
                     out.append((cand, *self._contained(conn, counts, *t)))
             return out
@@ -94,10 +105,14 @@ class JoinChecker:
         col = self._q(column)
         try:
             with self._engine.connect() as conn:
-                got = [r[0] for r in conn.execute(text(self._select(
-                    col, f"FROM {self._t(table)} WHERE {col} IS NOT NULL", rows))).fetchall()]
+                got = [
+                    r[0]
+                    for r in conn.execute(
+                        text(self._select(col, f"FROM {self._t(table)} WHERE {col} IS NOT NULL", rows))
+                    ).fetchall()
+                ]
         except SQLAlchemyError as e:
-            print(f"[profile] could not read {table}.{column}: {self._why(e)}", file=sys.stderr)
+            log.warning(f"could not read {table}.{column}: {self._why(e)}")
             return False
         if not (len(got) >= needed and len(set(got)) >= 0.95 * len(got)):
             return False
@@ -108,8 +123,9 @@ class JoinChecker:
         """(the column's values, why it could not be read). Errors are reported, never mistaken for 'not a join'."""
         col = self._q(column)
         try:
-            rows = conn.execute(text(self._select(
-                col, f"FROM {self._t(table)} WHERE {col} IS NOT NULL", READ_ROWS))).fetchall()
+            rows = conn.execute(
+                text(self._select(col, f"FROM {self._t(table)} WHERE {col} IS NOT NULL", READ_ROWS))
+            ).fetchall()
         except SQLAlchemyError as e:
             conn.rollback()
             return [], f"could not read the column: {self._why(e)}"
@@ -128,7 +144,7 @@ class JoinChecker:
         return exp.to_table(name).sql(dialect=self._dialect, identify=True)
 
     def _select(self, cols: str, rest: str, n: int) -> str:
-        return (f"SELECT TOP {n} {cols} {rest}" if self._top else f"SELECT {cols} {rest} LIMIT {n}")
+        return f"SELECT TOP {n} {cols} {rest}" if self._top else f"SELECT {cols} {rest} LIMIT {n}"
 
     def _contained(self, conn, counts: Counter, to_table: str, to_col: str) -> tuple[bool, str]:
         """(confirmed?, why) for the most frequent values of the source column against the target column."""
@@ -136,10 +152,17 @@ class JoinChecker:
         values = [v for v, _ in counts.most_common(MAX_LOOKUP)]
         try:
             params = {f"v{i}": v for i, v in enumerate(values)}
-            found = {_norm(r[0]) for r in conn.execute(text(
-                f"SELECT DISTINCT {tc} FROM {self._t(to_table)} WHERE {tc} IN "
-                f"({', '.join(':' + p for p in params)})"), params).fetchall()}
-        except SQLAlchemyError as e:   # e.g. text values that cannot convert to the key's type
+            found = {
+                _norm(r[0])
+                for r in conn.execute(
+                    text(
+                        f"SELECT DISTINCT {tc} FROM {self._t(to_table)} WHERE {tc} IN "
+                        f"({', '.join(':' + p for p in params)})"
+                    ),
+                    params,
+                ).fetchall()
+            }
+        except SQLAlchemyError as e:  # e.g. text values that cannot convert to the key's type
             conn.rollback()
             return False, self._why(e)
         hit = [v for v in values if _norm(v) in found]
@@ -150,8 +173,9 @@ class JoinChecker:
 
 
 class ValueSampler:
-    def __init__(self, engine, flavor: str, sample_rows: int = 2000, max_values: int = 10,
-                 enabled: bool = PROMPT_VALUE_HINTS):
+    def __init__(
+        self, engine, flavor: str, sample_rows: int = 2000, max_values: int = 10, enabled: bool = PROMPT_VALUE_HINTS
+    ):
         self.engine = engine
         self._engine, self._flavor = engine, flavor
         self._sample_rows, self._max_values = sample_rows, max_values
@@ -170,18 +194,18 @@ class ValueSampler:
         if not self._enabled:
             return
         inspector = sa_inspect(self._engine)
-        if not table.primary_key:   # normally read in bulk when the profile was built
+        if not table.primary_key:  # normally read in bulk when the profile was built
             try:
                 table.primary_key = inspector.get_pk_constraint(table.name).get("constrained_columns") or []
             except Exception as e:
-                print(f"[profile] primary key of {table.name} unavailable: {e}", file=sys.stderr)
+                log.warning(f"primary key of {table.name} unavailable: {e}")
         self._indexes_and_size(table, inspector)
         try:
             with self._engine.connect() as conn:
                 result = conn.execute(text(self._sample_sql(table.name)))
                 names, rows = list(result.keys()), result.fetchall()
         except Exception as e:
-            print(f"[profile] sample of {table.name} failed: {e}", file=sys.stderr)
+            log.warning(f"sample of {table.name} failed: {e}")
             return
         keys = key_columns | set(table.primary_key)
         for i, name in enumerate(names):
@@ -201,13 +225,12 @@ class ValueSampler:
                 if uq.get("column_names"):
                     leading.add(uq["column_names"][0])
         except Exception as e:
-            print(f"[profile] indexes of {table.name} unavailable: {e}", file=sys.stderr)
+            log.warning(f"indexes of {table.name} unavailable: {e}")
         for name in leading:
             if name in table.columns:
                 table.columns[name].indexed = True
         with self._engine.connect() as conn:
             table.row_estimate = estimate_rows(conn, self._flavor, table.name)
-
 
 
 def fill_column(col, name: str, vals: list, keys: set, max_values: int = 10) -> None:

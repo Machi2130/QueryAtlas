@@ -13,34 +13,35 @@ generic: it reasons about joins, keys, indexes and table sizes, never about one 
 from __future__ import annotations
 
 import datetime as dt
-import os
 import re
 from dataclasses import dataclass
 
 import sqlglot
 from sqlglot import exp
 
+from .config import settings
 from .profile.models import ColumnKind, DatabaseProfile
 from .validation import SQLGLOT_DIALECT
 
-LARGE_TABLE_ROWS = int(os.getenv("LARGE_TABLE_ROWS", 100_000))   # below this, speed findings are noise
+LARGE_TABLE_ROWS = settings.large_table_rows  # below this, speed findings are noise
 # Measured on 1.2M orders (SQLite): a range keeping ~2% of rows was 1.2x faster through the
 # index, one keeping ~27% was 4x SLOWER than the plain scan. SQLite takes an available index
 # whatever the cost, so there a rewrite must be selective. SQL Server / PostgreSQL / MySQL
 # choose by cost: an index-friendly predicate only adds options, so they always get it.
-SQLITE_REWRITE_SELECTIVITY = float(os.getenv("SQLITE_REWRITE_SELECTIVITY", 0.15))
+SQLITE_REWRITE_SELECTIVITY = settings.sqlite_rewrite_selectivity
 # Ranking questions. Not "at least one" / "at most 3": a live repair once turned a correct
 # count into a top-50 list because "least" matched.
-_RANKING = re.compile(r"\b(top \d+|top|highest|lowest|largest|smallest|best|worst|biggest)\b|\bthe (most|least)\b",
-                      re.IGNORECASE)
+_RANKING = re.compile(
+    r"\b(top \d+|top|highest|lowest|largest|smallest|best|worst|biggest)\b|\bthe (most|least)\b", re.IGNORECASE
+)
 _DATE_TYPE = re.compile(r"date|time", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
 class Finding:
-    code: str        # fan_out | left_join_filter | top_without_order | unknown_column | select_star | ...
-    message: str     # the reason, as the model is told in a repair round
-    fix: bool = True # False: worth knowing (shown to developers), not worth an extra LLM call
+    code: str  # fan_out | left_join_filter | top_without_order | unknown_column | select_star | ...
+    message: str  # the reason, as the model is told in a repair round
+    fix: bool = True  # False: worth knowing (shown to developers), not worth an extra LLM call
 
 
 class SqlReviewer:
@@ -49,8 +50,9 @@ class SqlReviewer:
         for cost-based engines, SQLITE_REWRITE_SELECTIVITY for SQLite)."""
         self._dialect = SQLGLOT_DIALECT.get(flavor)
         self._profile = profile
-        self._rewrite_up_to = rewrite_up_to if rewrite_up_to is not None else (
-            SQLITE_REWRITE_SELECTIVITY if flavor == "SQLite" else 1.0)
+        self._rewrite_up_to = (
+            rewrite_up_to if rewrite_up_to is not None else (SQLITE_REWRITE_SELECTIVITY if flavor == "SQLite" else 1.0)
+        )
         self._tables = {t.lower(): t for t in (profile.tables if profile else {})}
 
     # ── profile lookups ────────────────────────────────────────
@@ -67,7 +69,9 @@ class SqlReviewer:
     def _many_per(self, one: str, many: str) -> bool:
         """`many` has many rows per `one` row (a relationship many.x -> one.key)."""
         return bool(self._profile) and any(
-            r.from_table.lower() == many.lower() and r.to_table.lower() == one.lower() for r in self._profile.relationships)
+            r.from_table.lower() == many.lower() and r.to_table.lower() == one.lower()
+            for r in self._profile.relationships
+        )
 
     def _large(self, table: str) -> bool:
         t = self._table(table)
@@ -116,14 +120,22 @@ class SqlReviewer:
                     if rng and self._worth_rewriting(rng, scope):
                         col, lo, hi = rng
                         before = eq.sql(self._dialect)
-                        eq.replace(exp.Paren(this=exp.and_(exp.GTE(this=col.copy(), expression=exp.Literal.string(lo)),
-                                                           exp.LT(this=col.copy(), expression=exp.Literal.string(hi)))))
+                        eq.replace(
+                            exp.Paren(
+                                this=exp.and_(
+                                    exp.GTE(this=col.copy(), expression=exp.Literal.string(lo)),
+                                    exp.LT(this=col.copy(), expression=exp.Literal.string(hi)),
+                                )
+                            )
+                        )
                         applied.append(f"{before} -> {col.sql(self._dialect)} range {lo}..{hi}")
         if self._dialect == "tsql":
             for cast in list(tree.find_all(exp.Cast)):
                 if type(cast) is exp.Cast and cast.find_ancestor(exp.Where, exp.Join) is not None:
                     to_type = cast.args.get("to")
-                    if to_type and any(t in to_type.sql().upper() for t in ("INT", "DECIMAL", "NUMERIC", "FLOAT", "DATE")):
+                    if to_type and any(
+                        t in to_type.sql().upper() for t in ("INT", "DECIMAL", "NUMERIC", "FLOAT", "DATE")
+                    ):
                         before = cast.sql(self._dialect)
                         cast.replace(exp.TryCast(this=cast.this.copy(), to=to_type.copy()))
                         applied.append(f"{before} -> TRY_CAST")
@@ -195,7 +207,7 @@ class SqlReviewer:
         try:
             tree = sqlglot.parse_one(sql, read=self._dialect)
         except sqlglot.errors.SqlglotError:
-            return []                          # the validator reports unparseable SQL
+            return []  # the validator reports unparseable SQL
         findings: list[Finding] = []
         for select in tree.find_all(exp.Select):
             scope = self._scope(select)
@@ -205,9 +217,14 @@ class SqlReviewer:
             findings += self._unknown_columns(select, scope)
             findings += self._speed(select, scope, outermost=select is tree or select.parent is tree)
         if isinstance(tree, exp.Select) and _RANKING.search(question or "") and not tree.args.get("order"):
-            findings.append(Finding("top_without_order", "The question asks for a ranking but the query has no "
-                                    "ORDER BY, so the rows returned are arbitrary. Add ORDER BY on the ranked measure "
-                                    "(with a tie-breaker) before LIMIT/TOP."))
+            findings.append(
+                Finding(
+                    "top_without_order",
+                    "The question asks for a ranking but the query has no "
+                    "ORDER BY, so the rows returned are arbitrary. Add ORDER BY on the ranked measure "
+                    "(with a tie-breaker) before LIMIT/TOP.",
+                )
+            )
         return list(dict.fromkeys(findings))
 
     def _fan_out(self, select: exp.Select, scope: dict[str, str]) -> list[Finding]:
@@ -220,10 +237,15 @@ class SqlReviewer:
             for one in owners:
                 many = [t for t in scope.values() if t != one and self._many_per(one, t)]
                 if many:
-                    out.append(Finding("fan_out", f"{agg.sql(self._dialect)} totals a column of {one} after joining "
-                                       f"{', '.join(many)}, which has many rows per {one} row, so each {one} value is "
-                                       f"counted once per {many[0]} row. Aggregate {many[0]} in a subquery first, or "
-                                       f"take the {one} figure without joining {many[0]}."))
+                    out.append(
+                        Finding(
+                            "fan_out",
+                            f"{agg.sql(self._dialect)} totals a column of {one} after joining "
+                            f"{', '.join(many)}, which has many rows per {one} row, so each {one} value is "
+                            f"counted once per {many[0]} row. Aggregate {many[0]} in a subquery first, or "
+                            f"take the {one} figure without joining {many[0]}.",
+                        )
+                    )
                     continue
                 # Two many-side tables of the same parent: each row of one repeats per row of the other.
                 for parent in scope.values():
@@ -231,10 +253,15 @@ class SqlReviewer:
                         continue
                     sibling = [t for t in scope.values() if t not in (one, parent) and self._many_per(parent, t)]
                     if sibling:
-                        out.append(Finding("fan_out", f"{agg.sql(self._dialect)} totals {one} rows, but {sibling[0]} is "
-                                           f"joined too and both have many rows per {parent} row, so each {one} row "
-                                           f"repeats once per {sibling[0]} row of the same {parent}. Aggregate {one} and "
-                                           f"{sibling[0]} per {parent} in separate subqueries, then join those."))
+                        out.append(
+                            Finding(
+                                "fan_out",
+                                f"{agg.sql(self._dialect)} totals {one} rows, but {sibling[0]} is "
+                                f"joined too and both have many rows per {parent} row, so each {one} row "
+                                f"repeats once per {sibling[0]} row of the same {parent}. Aggregate {one} and "
+                                f"{sibling[0]} per {parent} in separate subqueries, then join those.",
+                            )
+                        )
                         break
         return out
 
@@ -249,10 +276,15 @@ class SqlReviewer:
             alias = (join.this.alias_or_name or join.this.name).lower()
             for col in where.find_all(exp.Column):
                 if (col.table or "").lower() == alias and self._own(col, select) and not col.find_ancestor(exp.Is):
-                    out.append(Finding("left_join_filter", f"WHERE filters on {col.sql(self._dialect)} from the LEFT "
-                                       f"JOINed {join.this.name}: rows without a match have NULL there and are dropped, "
-                                       "so this behaves like an inner join. Move that condition into the JOIN's ON if "
-                                       "unmatched rows must stay."))
+                    out.append(
+                        Finding(
+                            "left_join_filter",
+                            f"WHERE filters on {col.sql(self._dialect)} from the LEFT "
+                            f"JOINed {join.this.name}: rows without a match have NULL there and are dropped, "
+                            "so this behaves like an inner join. Move that condition into the JOIN's ON if "
+                            "unmatched rows must stay.",
+                        )
+                    )
                     break
         return out
 
@@ -266,13 +298,19 @@ class SqlReviewer:
             alias = (join.this.alias_or_name or join.this.name).lower()
             table = join.this.name
             used = any(
-                self._own(col, select) and col.find_ancestor(exp.Join) is not join
+                self._own(col, select)
+                and col.find_ancestor(exp.Join) is not join
                 and ((col.table or "").lower() == alias or (not col.table and self._resolve(col, scope) == table))
                 for col in select.find_all(exp.Column)
             )
             if not used:
-                out.append(Finding("unused_left_join", f"LEFT JOIN {table} is never used outside its ON clause, "
-                                   "so it contributes no columns or filters and can only duplicate rows. Remove it."))
+                out.append(
+                    Finding(
+                        "unused_left_join",
+                        f"LEFT JOIN {table} is never used outside its ON clause, "
+                        "so it contributes no columns or filters and can only duplicate rows. Remove it.",
+                    )
+                )
         return out
 
     def _unknown_columns(self, select: exp.Select, scope: dict[str, str]) -> list[Finding]:
@@ -290,26 +328,42 @@ class SqlReviewer:
     def _speed(self, select: exp.Select, scope: dict[str, str], outermost: bool) -> list[Finding]:
         big = [t for t in scope.values() if self._large(t)]
         if not big:
-            return []                          # small tables: any plan is fast, findings would be noise
+            return []  # small tables: any plan is fast, findings would be noise
         out = []
         if outermost and any(isinstance(e, exp.Star) for e in select.expressions):
-            out.append(Finding("select_star", f"SELECT * reads every column of {', '.join(big)} (large); select only "
-                               "the columns the question needs."))
+            out.append(
+                Finding(
+                    "select_star",
+                    f"SELECT * reads every column of {', '.join(big)} (large); select only "
+                    "the columns the question needs.",
+                )
+            )
         if select.args.get("distinct") and any(self._many_per(a, b) for a in scope.values() for b in scope.values()):
-            out.append(Finding("distinct_join", "DISTINCT over a join to a many-side table: check the join is not "
-                               "creating the duplicates DISTINCT removes (EXISTS or aggregation may say it more directly). "
-                               "Not necessarily slower: measured faster than EXISTS on SQLite.", fix=False))
+            out.append(
+                Finding(
+                    "distinct_join",
+                    "DISTINCT over a join to a many-side table: check the join is not "
+                    "creating the duplicates DISTINCT removes (EXISTS or aggregation may say it more directly). "
+                    "Not necessarily slower: measured faster than EXISTS on SQLite.",
+                    fix=False,
+                )
+            )
         where = select.args.get("where")
-        for cmp in (where.find_all(exp.EQ, exp.GT, exp.GTE, exp.LT, exp.LTE) if where is not None else []):
+        for cmp in where.find_all(exp.EQ, exp.GT, exp.GTE, exp.LT, exp.LTE) if where is not None else []:
             for side in (cmp.this, cmp.expression):
                 if isinstance(side, exp.Func) and not isinstance(side, exp.Column):
                     if isinstance(cmp, exp.EQ) and self._date_range(cmp, scope):
-                        continue               # a date period: rewrite() decides, using selectivity
+                        continue  # a date period: rewrite() decides, using selectivity
                     col = side.find(exp.Column)
                     table = self._resolve(col, scope) if col is not None else None
                     cp = self._column(table, col.name) if table else None
                     if cp is not None and cp.indexed and self._large(table):
-                        out.append(Finding("non_sargable", f"{side.sql(self._dialect)} wraps the indexed column "
-                                           f"{table}.{col.name} in a function, so its index cannot be used on a large "
-                                           "table; compare the bare column with a range or value instead."))
+                        out.append(
+                            Finding(
+                                "non_sargable",
+                                f"{side.sql(self._dialect)} wraps the indexed column "
+                                f"{table}.{col.name} in a function, so its index cannot be used on a large "
+                                "table; compare the bare column with a range or value instead.",
+                            )
+                        )
         return out

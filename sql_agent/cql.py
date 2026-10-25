@@ -7,11 +7,13 @@ and the tenant filter can be added as one more AND condition.
 from __future__ import annotations
 
 import itertools
-import sys
+import logging
 import re
 
 from .database import safe_rows
 from .validation import _BLOCKED_KW, QueryValidationError, is_sensitive
+
+log = logging.getLogger(__name__)
 
 DEFAULT_LIMIT = 50
 _NUMERIC = {"int", "bigint", "smallint", "tinyint", "varint", "float", "double", "decimal", "counter"}
@@ -26,22 +28,27 @@ def _blank(text: str) -> str:
 
 
 def _name(token: str) -> str:
-    return token[1:-1] if token.startswith('"') else token.lower()   # unquoted names are lower-case in CQL
+    return token[1:-1] if token.startswith('"') else token.lower()  # unquoted names are lower-case in CQL
 
 
 def schema(session, keyspace: str) -> tuple[dict[str, list[str]], dict[str, dict[str, list[str]]]]:
     """({table: ["column (type)"]}, {table: {"partition": [...], "clustering": [...]}}), credential columns left out."""
     columns: dict[str, list[str]] = {}
     keys: dict[str, dict[str, list[str]]] = {}
-    rows = session.execute("SELECT table_name, column_name, type, kind, position FROM system_schema.columns "
-                           "WHERE keyspace_name = %s", [keyspace])
-    for row in sorted(rows, key=lambda r: (r.table_name, r.kind != "partition_key", r.kind != "clustering", r.position)):
+    rows = session.execute(
+        "SELECT table_name, column_name, type, kind, position FROM system_schema.columns WHERE keyspace_name = %s",
+        [keyspace],
+    )
+    for row in sorted(
+        rows, key=lambda r: (r.table_name, r.kind != "partition_key", r.kind != "clustering", r.position)
+    ):
         if is_sensitive(row.column_name):
             continue
         columns.setdefault(row.table_name, []).append(f"{row.column_name} ({row.type})")
         if row.kind in ("partition_key", "clustering"):
             keys.setdefault(row.table_name, {"partition": [], "clustering": []})[
-                "partition" if row.kind == "partition_key" else "clustering"].append(row.column_name)
+                "partition" if row.kind == "partition_key" else "clustering"
+            ].append(row.column_name)
     return columns, keys
 
 
@@ -60,7 +67,7 @@ def validate(query: str, schema_dict: dict) -> str:
     blanked = _blank(q)
     if ";" in blanked:
         raise QueryValidationError("One statement per call (no ';').")
-    if re.search(r"--|/\*|//", blanked):   # a comment would swallow the tenant filter added after it
+    if re.search(r"--|/\*|//", blanked):  # a comment would swallow the tenant filter added after it
         raise QueryValidationError("Comments are not allowed in a query.")
     if not re.match(r"\s*SELECT\b", blanked, re.IGNORECASE):
         raise QueryValidationError("Query must be a SELECT.")
@@ -73,11 +80,15 @@ def validate(query: str, schema_dict: dict) -> str:
         if is_sensitive(quoted or bare):
             raise QueryValidationError(f"Access to sensitive column '{quoted or bare}' is blocked.")
     table = table_of(q)
-    if table not in schema_dict:   # _name already applied CQL folding; names are exact
+    if table not in schema_dict:  # _name already applied CQL folding; names are exact
         raise QueryValidationError(f"Table '{table}' not in schema.")
     if not re.search(r"\bLIMIT\b", blanked, re.IGNORECASE):
         allow = re.search(r"\bALLOW\s+FILTERING\b", blanked, re.IGNORECASE)
-        q = (q[:allow.start()] + f"LIMIT {DEFAULT_LIMIT} " + q[allow.start():]) if allow else f"{q} LIMIT {DEFAULT_LIMIT}"
+        q = (
+            (q[: allow.start()] + f"LIMIT {DEFAULT_LIMIT} " + q[allow.start() :])
+            if allow
+            else f"{q} LIMIT {DEFAULT_LIMIT}"
+        )
     return q
 
 
@@ -86,11 +97,17 @@ def apply_scope(query: str, scope: dict | None, schema_dict: dict) -> tuple[str,
     if not scope:
         return query, []
     table = table_of(query)
-    if table not in scope["tables"]:   # exact: a quoted "Notes" must not slip past a lower-cased map
+    if table not in scope["tables"]:  # exact: a quoted "Notes" must not slip past a lower-cased map
         return query, []
     column, value = scope["column"], str(scope["value"])
-    kind = next((c.split(" ", 1)[1].strip("()").lower() for c in schema_dict.get(table, [])
-                 if c.split(" ")[0].lower() == column.lower()), "text")
+    kind = next(
+        (
+            c.split(" ", 1)[1].strip("()").lower()
+            for c in schema_dict.get(table, [])
+            if c.split(" ")[0].lower() == column.lower()
+        ),
+        "text",
+    )
     if kind in _NUMERIC:
         if not re.fullmatch(r"-?\d+(\.\d+)?", value):
             raise QueryValidationError(f"Tenant value {value!r} is not a number, but {column} is {kind}.")
@@ -101,18 +118,22 @@ def apply_scope(query: str, scope: dict | None, schema_dict: dict) -> tuple[str,
     blanked = _blank(query)
     where = re.search(r"\bWHERE\b", blanked, re.IGNORECASE)
     if where:
-        query = f"{query[:where.end()]} {condition} AND{query[where.end():]}"
+        query = f"{query[: where.end()]} {condition} AND{query[where.end() :]}"
     else:
         tail = _TAIL.search(blanked)
-        query = (f"{query[:tail.start()]}WHERE {condition} {query[tail.start():]}" if tail
-                 else f"{query} WHERE {condition}")
+        query = (
+            f"{query[: tail.start()]}WHERE {condition} {query[tail.start() :]}"
+            if tail
+            else f"{query} WHERE {condition}"
+        )
     if not re.search(r"\bALLOW\s+FILTERING\b", _blank(query), re.IGNORECASE):
-        query += " ALLOW FILTERING"   # the tenant column is usually not part of the key
+        query += " ALLOW FILTERING"  # the tenant column is usually not part of the key
     return query, [table]
 
 
-_WRITE_TABLE = re.compile(r'^\s*(?:INSERT\s+INTO|UPDATE|DELETE\b.*?\bFROM)\s+("[^"]+"|\w+)(\s*\.\s*("[^"]+"|\w+))?',
-                          re.IGNORECASE | re.DOTALL)
+_WRITE_TABLE = re.compile(
+    r'^\s*(?:INSERT\s+INTO|UPDATE|DELETE\b.*?\bFROM)\s+("[^"]+"|\w+)(\s*\.\s*("[^"]+"|\w+))?', re.IGNORECASE | re.DOTALL
+)
 _DDL = re.compile(r"^\s*(CREATE|ALTER|DROP|TRUNCATE)\b", re.IGNORECASE)
 _NOT_TABLE_DDL = re.compile(r"^\s*\w+\s+(ROLE|USER|KEYSPACE|FUNCTION|AGGREGATE)\b", re.IGNORECASE)
 
@@ -140,14 +161,19 @@ def parse_write(query: str, schema_dict: dict, allow_ddl: bool) -> tuple[str, st
         return q, _name(m.group(1)) if m else "", True
     m = _WRITE_TABLE.match(blanked)
     if not m:
-        raise QueryValidationError("execute_write accepts INSERT, UPDATE, DELETE"
-                                   + (", CREATE, ALTER, DROP, TRUNCATE" if allow_ddl else "") + " only.")
+        raise QueryValidationError(
+            "execute_write accepts INSERT, UPDATE, DELETE"
+            + (", CREATE, ALTER, DROP, TRUNCATE" if allow_ddl else "")
+            + " only."
+        )
     if m.group(2):
         raise QueryValidationError("Use the bare table name: this connection writes one keyspace.")
     table = _name(m.group(1))
-    if table not in schema_dict:   # _name already applied CQL folding; names are exact
+    if table not in schema_dict:  # _name already applied CQL folding; names are exact
         raise QueryValidationError(f"Table '{table}' not in schema.")
-    if re.match(r"\s*(UPDATE|DELETE)\b", blanked, re.IGNORECASE) and not re.search(r"\bWHERE\b", blanked, re.IGNORECASE):
+    if re.match(r"\s*(UPDATE|DELETE)\b", blanked, re.IGNORECASE) and not re.search(
+        r"\bWHERE\b", blanked, re.IGNORECASE
+    ):
         raise QueryValidationError("UPDATE/DELETE needs a WHERE clause.")
     return q, table, False
 
@@ -167,18 +193,23 @@ class Sampler:
 
     def profile(self, table, key_columns: set[str]) -> None:
         from .profile.sampler import fill_column
+
         table.sampled = True
         k = self._keys.get(table.name, {})
         table.primary_key = table.primary_key or k.get("partition", []) + k.get("clustering", [])
         for name in table.primary_key[:1]:
             if name in table.columns:
                 table.columns[name].indexed = True
-        quoted = '"' + table.name.replace('"', '""') + '"'   # a name from the catalog, quoted as an identifier
+        quoted = '"' + table.name.replace('"', '""') + '"'  # a name from the catalog, quoted as an identifier
         try:
-            rows = list(itertools.islice(self._session.execute(f"SELECT * FROM {quoted} LIMIT {self._sample}",
-                                                               timeout=self._timeout), self._sample))
+            rows = list(
+                itertools.islice(
+                    self._session.execute(f"SELECT * FROM {quoted} LIMIT {self._sample}", timeout=self._timeout),
+                    self._sample,
+                )
+            )
         except Exception as e:
-            print(f"[profile] sample of {table.name} failed: {e}", file=sys.stderr)
+            log.warning(f"sample of {table.name} failed: {e}")
             return
         keys = key_columns | set(table.primary_key)
         for name, col in table.columns.items():

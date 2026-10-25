@@ -14,8 +14,6 @@ Pipeline:
 from __future__ import annotations
 
 import re
-from typing import Any
-
 
 # ═══════════════════════════════════════════════════════════════
 #  INTENT DETECTION — pure code, no LLM
@@ -23,86 +21,115 @@ from typing import Any
 
 INTENT_PATTERNS = {
     "count": [
-        r"\bhow many\b", r"\bcount\b", r"\btotal number\b", r"\bnumber of\b",
+        r"\bhow many\b",
+        r"\bcount\b",
+        r"\btotal number\b",
+        r"\bnumber of\b",
     ],
     "sum": [
         r"\btotal\b.*\b(sales|amount|revenue|value|price|cost)\b",
-        r"\bsum\b", r"\bgrand total\b",
+        r"\bsum\b",
+        r"\bgrand total\b",
     ],
     "average": [
-        r"\baverage\b", r"\bavg\b", r"\bmean\b",
+        r"\baverage\b",
+        r"\bavg\b",
+        r"\bmean\b",
     ],
     "time_series": [
-        r"\bdaily\b", r"\bweekly\b", r"\bmonthly\b", r"\byearly\b",
-        r"\bby (day|week|month|year|date)\b", r"\btrend\b", r"\bover time\b",
+        r"\bdaily\b",
+        r"\bweekly\b",
+        r"\bmonthly\b",
+        r"\byearly\b",
+        r"\bby (day|week|month|year|date)\b",
+        r"\btrend\b",
+        r"\bover time\b",
     ],
     "top_n": [
-        r"\btop \d+\b", r"\bbest\b", r"\bhighest\b", r"\blargest\b",
-        r"\bmost\b", r"\bmaximum\b",
+        r"\btop \d+\b",
+        r"\bbest\b",
+        r"\bhighest\b",
+        r"\blargest\b",
+        r"\bmost\b",
+        r"\bmaximum\b",
     ],
     "bottom_n": [
-        r"\bbottom \d+\b", r"\bworst\b", r"\blowest\b", r"\bsmallest\b",
-        r"\bleast\b", r"\bminimum\b",
+        r"\bbottom \d+\b",
+        r"\bworst\b",
+        r"\blowest\b",
+        r"\bsmallest\b",
+        r"\bleast\b",
+        r"\bminimum\b",
     ],
     "latest": [
-        r"\blatest\b", r"\brecent\b", r"\blast \d+\b", r"\bnewest\b",
+        r"\blatest\b",
+        r"\brecent\b",
+        r"\blast \d+\b",
+        r"\bnewest\b",
     ],
     "filter": [
-        r"\bwhere\b", r"\bfor\b.*\b(store|customer|product|category)\b",
-        r"\bonly\b", r"\bspecific\b",
+        r"\bwhere\b",
+        r"\bfor\b.*\b(store|customer|product|category)\b",
+        r"\bonly\b",
+        r"\bspecific\b",
     ],
     "list": [
-        r"\bshow\b", r"\blist\b", r"\bdisplay\b", r"\bget\b", r"\bfetch\b",
+        r"\bshow\b",
+        r"\blist\b",
+        r"\bdisplay\b",
+        r"\bget\b",
+        r"\bfetch\b",
     ],
 }
 
 _TIME_RANGES: dict[str, dict[str, str]] = {
     "SQL Server": {
-        "today":        "CAST(GETDATE() AS date)",
-        "yesterday":    "DATEADD(day, -1, CAST(GETDATE() AS date))",
-        "this week":    "DATEADD(week, DATEDIFF(week, 0, GETDATE()), 0)",
-        "last 7 days":  "DATEADD(day, -7, CAST(GETDATE() AS date))",
-        "this month":   "DATEADD(month, DATEDIFF(month, 0, GETDATE()), 0)",
-        "last month":   "DATEADD(month, DATEDIFF(month, 0, GETDATE()) - 1, 0)",
+        "today": "CAST(GETDATE() AS date)",
+        "yesterday": "DATEADD(day, -1, CAST(GETDATE() AS date))",
+        "this week": "DATEADD(week, DATEDIFF(week, 0, GETDATE()), 0)",
+        "last 7 days": "DATEADD(day, -7, CAST(GETDATE() AS date))",
+        "this month": "DATEADD(month, DATEDIFF(month, 0, GETDATE()), 0)",
+        "last month": "DATEADD(month, DATEDIFF(month, 0, GETDATE()) - 1, 0)",
         "last 30 days": "DATEADD(day, -30, CAST(GETDATE() AS date))",
-        "this year":    "DATEADD(year, DATEDIFF(year, 0, GETDATE()), 0)",
-        "last year":    "DATEADD(year, DATEDIFF(year, 0, GETDATE()) - 1, 0)",
+        "this year": "DATEADD(year, DATEDIFF(year, 0, GETDATE()), 0)",
+        "last year": "DATEADD(year, DATEDIFF(year, 0, GETDATE()) - 1, 0)",
     },
     "PostgreSQL": {
-        "today":        "CURRENT_DATE",
-        "yesterday":    "CURRENT_DATE - INTERVAL '1 day'",
-        "this week":    "DATE_TRUNC('week', CURRENT_DATE)",
-        "last 7 days":  "CURRENT_DATE - INTERVAL '7 days'",
-        "this month":   "DATE_TRUNC('month', CURRENT_DATE)",
-        "last month":   "DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '1 month'",
+        "today": "CURRENT_DATE",
+        "yesterday": "CURRENT_DATE - INTERVAL '1 day'",
+        "this week": "DATE_TRUNC('week', CURRENT_DATE)",
+        "last 7 days": "CURRENT_DATE - INTERVAL '7 days'",
+        "this month": "DATE_TRUNC('month', CURRENT_DATE)",
+        "last month": "DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '1 month'",
         "last 30 days": "CURRENT_DATE - INTERVAL '30 days'",
-        "this year":    "DATE_TRUNC('year', CURRENT_DATE)",
-        "last year":    "DATE_TRUNC('year', CURRENT_DATE) - INTERVAL '1 year'",
+        "this year": "DATE_TRUNC('year', CURRENT_DATE)",
+        "last year": "DATE_TRUNC('year', CURRENT_DATE) - INTERVAL '1 year'",
     },
     "MySQL": {
-        "today":        "CURDATE()",
-        "yesterday":    "DATE_SUB(CURDATE(), INTERVAL 1 DAY)",
-        "this week":    "DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY)",
-        "last 7 days":  "DATE_SUB(CURDATE(), INTERVAL 7 DAY)",
-        "this month":   "DATE_FORMAT(CURDATE(), '%Y-%m-01')",
-        "last month":   "DATE_FORMAT(DATE_SUB(CURDATE(), INTERVAL 1 MONTH), '%Y-%m-01')",
+        "today": "CURDATE()",
+        "yesterday": "DATE_SUB(CURDATE(), INTERVAL 1 DAY)",
+        "this week": "DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY)",
+        "last 7 days": "DATE_SUB(CURDATE(), INTERVAL 7 DAY)",
+        "this month": "DATE_FORMAT(CURDATE(), '%Y-%m-01')",
+        "last month": "DATE_FORMAT(DATE_SUB(CURDATE(), INTERVAL 1 MONTH), '%Y-%m-01')",
         "last 30 days": "DATE_SUB(CURDATE(), INTERVAL 30 DAY)",
-        "this year":    "DATE_FORMAT(CURDATE(), '%Y-01-01')",
-        "last year":    "DATE_FORMAT(DATE_SUB(CURDATE(), INTERVAL 1 YEAR), '%Y-01-01')",
+        "this year": "DATE_FORMAT(CURDATE(), '%Y-01-01')",
+        "last year": "DATE_FORMAT(DATE_SUB(CURDATE(), INTERVAL 1 YEAR), '%Y-01-01')",
     },
     "SQLite": {
-        "today":        "date('now')",
-        "yesterday":    "date('now', '-1 day')",
-        "this week":    "date('now', 'weekday 0', '-7 days')",
-        "last 7 days":  "date('now', '-7 days')",
-        "this month":   "date('now', 'start of month')",
-        "last month":   "date('now', 'start of month', '-1 month')",
+        "today": "date('now')",
+        "yesterday": "date('now', '-1 day')",
+        "this week": "date('now', 'weekday 0', '-7 days')",
+        "last 7 days": "date('now', '-7 days')",
+        "this month": "date('now', 'start of month')",
+        "last month": "date('now', 'start of month', '-1 month')",
         "last 30 days": "date('now', '-30 days')",
-        "this year":    "date('now', 'start of year')",
-        "last year":    "date('now', 'start of year', '-1 year')",
+        "this year": "date('now', 'start of year')",
+        "last year": "date('now', 'start of year', '-1 year')",
     },
 }
 _TIME_RANGES["MariaDB"] = _TIME_RANGES["MySQL"]
+
 
 def detect_intents(question: str) -> list[str]:
     q = question.lower()
@@ -117,11 +144,12 @@ def detect_intents(question: str) -> list[str]:
 
 _MONTH_YEAR_FN: dict[str, str] = {
     "SQL Server": "YEAR(GETDATE())",
-    "MySQL":      "YEAR(CURDATE())",
-    "MariaDB":    "YEAR(CURDATE())",
+    "MySQL": "YEAR(CURDATE())",
+    "MariaDB": "YEAR(CURDATE())",
     "PostgreSQL": "EXTRACT(YEAR FROM CURRENT_DATE)",
-    "SQLite":     "strftime('%Y', 'now')",
+    "SQLite": "strftime('%Y', 'now')",
 }
+
 
 def detect_time_range(question: str, flavor: str = "SQL Server") -> str | None:
     q = question.lower()
@@ -133,8 +161,20 @@ def detect_time_range(question: str, flavor: str = "SQL Server") -> str | None:
         r"(january|february|march|april|may|june|july|august|september|october|november|december)\s*(\d{4})?", q
     )
     if month_match:
-        months = {"january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
-                  "july": 7, "august": 8, "september": 9, "october": 10, "november": 11, "december": 12}
+        months = {
+            "january": 1,
+            "february": 2,
+            "march": 3,
+            "april": 4,
+            "may": 5,
+            "june": 6,
+            "july": 7,
+            "august": 8,
+            "september": 9,
+            "october": 10,
+            "november": 11,
+            "december": 12,
+        }
         m = months.get(month_match.group(1), 1)
         y = month_match.group(2) or _MONTH_YEAR_FN.get(flavor, "YEAR(GETDATE())")
         return f"'{y}-{m:02d}-01'"
@@ -156,28 +196,66 @@ def build_concept_map(schema_dict: dict) -> dict:
         col_lower = [c.lower() for c in col_names]
 
         tbl_lower = tbl.lower()
-        keywords = set(re.findall(r'[a-z]+', tbl_lower))
+        keywords = set(re.findall(r"[a-z]+", tbl_lower))
 
-        date_col = next((c for c, cl in zip(col_names, col_lower)
-                         if cl in ("invoice_dt", "order_dt", "created_dt", "payment_dt",
-                                   "transaction_dt", "invoice_date", "order_date", "created_at",
-                                   "sale_date", "purchase_date", "entry_date", "bill_dt", "bill_date")), None)
-        value_col = next((c for c, cl in zip(col_names, col_lower)
-                          if cl in ("grand_total", "total_amount", "net_amount", "amount",
-                                    "total", "net_total", "bill_amount", "invoice_amount",
-                                    "line_total", "sub_total", "paid_amount")), None)
+        date_col = next(
+            (
+                c
+                for c, cl in zip(col_names, col_lower, strict=False)
+                if cl
+                in (
+                    "invoice_dt",
+                    "order_dt",
+                    "created_dt",
+                    "payment_dt",
+                    "transaction_dt",
+                    "invoice_date",
+                    "order_date",
+                    "created_at",
+                    "sale_date",
+                    "purchase_date",
+                    "entry_date",
+                    "bill_dt",
+                    "bill_date",
+                )
+            ),
+            None,
+        )
+        value_col = next(
+            (
+                c
+                for c, cl in zip(col_names, col_lower, strict=False)
+                if cl
+                in (
+                    "grand_total",
+                    "total_amount",
+                    "net_amount",
+                    "amount",
+                    "total",
+                    "net_total",
+                    "bill_amount",
+                    "invoice_amount",
+                    "line_total",
+                    "sub_total",
+                    "paid_amount",
+                )
+            ),
+            None,
+        )
 
         for kw in keywords:
             if kw in ("tr", "ms", "tbl", "sys", "asp", "net", "log"):
                 continue
             if kw not in concepts:
                 concepts[kw] = []
-            concepts[kw].append({
-                "table": tbl,
-                "columns": col_names,
-                "date_column": date_col,
-                "value_column": value_col,
-            })
+            concepts[kw].append(
+                {
+                    "table": tbl,
+                    "columns": col_names,
+                    "date_column": date_col,
+                    "value_column": value_col,
+                }
+            )
 
     return concepts
 
@@ -208,7 +286,7 @@ def map_concepts(question: str, schema_dict: dict) -> dict:
     mapped = {}
     scores: dict[str, int] = {}
 
-    q_words = set(re.findall(r'\w+', q))
+    q_words = set(re.findall(r"\w+", q))
 
     for word in q_words:
         if word in concepts:
@@ -232,16 +310,22 @@ def map_concepts(question: str, schema_dict: dict) -> dict:
 
 def auto_map_from_schema(question: str, schema_dict: dict) -> dict:
     """Fuzzy-match question words to actual table names in the schema."""
-    q_words = set(re.findall(r'\w+', question.lower()))
+    q_words = set(re.findall(r"\w+", question.lower()))
     mapped = {}
 
     for tbl in schema_dict:
-        tbl_words = set(re.findall(r'\w+', tbl.lower()))
+        tbl_words = set(re.findall(r"\w+", tbl.lower()))
         overlap = q_words & tbl_words
         if overlap:
             cols = [c.split(" ")[0] for c in schema_dict[tbl]]
-            date_cols = [c for c in cols if any(d in c.lower() for d in ["_dt", "_date", "date", "created", "invoice_dt"])]
-            value_cols = [c for c in cols if any(v in c.lower() for v in ["amount", "total", "grand", "price", "value", "qty", "quantity"])]
+            date_cols = [
+                c for c in cols if any(d in c.lower() for d in ["_dt", "_date", "date", "created", "invoice_dt"])
+            ]
+            value_cols = [
+                c
+                for c in cols
+                if any(v in c.lower() for v in ["amount", "total", "grand", "price", "value", "qty", "quantity"])
+            ]
             mapped[tbl] = {
                 "columns": cols,
                 "value_column": value_cols[0] if value_cols else None,
@@ -255,6 +339,7 @@ def auto_map_from_schema(question: str, schema_dict: dict) -> dict:
 # ═══════════════════════════════════════════════════════════════
 #  QUERY PLAN — structured output for the LLM
 # ═══════════════════════════════════════════════════════════════
+
 
 def build_query_plan(question: str, schema_dict: dict, kg_joins: list = None, flavor: str = "SQL Server") -> dict:
     """

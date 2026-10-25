@@ -17,22 +17,22 @@ import dataclasses
 import hashlib
 import hmac
 import ipaddress
-import json
 import os
 import re
 import secrets
 import socket
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable
 
+from .config import settings
 
 # ── Connection tokens: opaque random ids, valid only while the server remembers them ──
 # A token proves nothing by itself: the server's ledger maps it to (user, connection key), so it
 # cannot be forged, replayed after revocation, or used by another user. (An earlier design encrypted
 # the payload with RSA-OAEP, which cannot hold more than 190 bytes: hosted session ids broke it.)
-_ACTIVE_TOKENS: dict[str, tuple[str, str]] = {}   # secret -> (user_id, conn_key)
+_ACTIVE_TOKENS: dict[str, tuple[str, str]] = {}  # secret -> (user_id, conn_key)
 _TOKEN_LOCK = threading.Lock()
 
 
@@ -72,16 +72,16 @@ def revoke_rsa_token(token: str) -> None:
 @dataclass(frozen=True)
 class ConnectionInfo:
     key: str
-    label: str                  # what the user sees, e.g. "SQL Server · SalesDB"
+    label: str  # what the user sees, e.g. "SQL Server · SalesDB"
     db_type: str
     # How to reopen it: type, host, port, username, database, path, keyspace. Never the password.
     descriptor: dict = field(default_factory=dict, compare=False, hash=False)
     has_password: bool = False  # only password-protected connections lock when idle
-    rsa_token: str = field(default="", compare=False, hash=False, repr=False)   # never in a printed object
+    rsa_token: str = field(default="", compare=False, hash=False, repr=False)  # never in a printed object
 
 
 def allowed_hosts() -> set[str]:
-    return {h.strip().lower() for h in os.getenv("MCP_ALLOWED_HOSTS", "").split(",") if h.strip()}
+    return settings.allowed_hosts
 
 
 _HOST_RE = re.compile(r"[a-z0-9._:\[\]\\-]{1,253}")
@@ -92,12 +92,18 @@ class TargetRefused(ValueError):
 
 
 def _not_public(address: str) -> bool:
-    ip = ipaddress.ip_address(address.split("%", 1)[0])   # drop an IPv6 zone id
+    ip = ipaddress.ip_address(address.split("%", 1)[0])  # drop an IPv6 zone id
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
         ip = ip.ipv4_mapped
-    return (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
-            or ip.is_multicast or ip.is_unspecified
-            or (isinstance(ip, ipaddress.IPv4Address) and ip in ipaddress.ip_network("100.64.0.0/10")))
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+        or (isinstance(ip, ipaddress.IPv4Address) and ip in ipaddress.ip_network("100.64.0.0/10"))
+    )
 
 
 MONGO_SRV = "mongodb+srv://"
@@ -109,7 +115,7 @@ def mongo_srv_name(host: str) -> str:
     text = str(host or "").strip()
     if not text.lower().startswith(MONGO_SRV):
         return ""
-    rest = text[len(MONGO_SRV):]
+    rest = text[len(MONGO_SRV) :]
     if "@" in rest:
         raise TargetRefused("Put the username and password in their own fields, not in the address.")
     return rest.split("/", 1)[0].split("?", 1)[0].lower()
@@ -119,10 +125,11 @@ def _srv_targets(name: str) -> list[str]:
     """The servers an Atlas-style address points to (its DNS SRV record)."""
     import dns.exception
     import dns.resolver
+
     try:
         return [str(r.target).rstrip(".") for r in dns.resolver.resolve(f"_mongodb._tcp.{name}", "SRV")]
-    except dns.exception.DNSException:
-        raise TargetRefused(f"'{name}' could not be found. Check the mongodb+srv address.")
+    except dns.exception.DNSException as exc:
+        raise TargetRefused(f"'{name}' could not be found. Check the mongodb+srv address.") from exc
 
 
 def check_target(db_type: str, host: str, db_path: str, hosted: bool) -> str:
@@ -135,16 +142,16 @@ def check_target(db_type: str, host: str, db_path: str, hosted: bool) -> str:
     cloud metadata address; MCP_ALLOWED_HOSTS lists the operator's own internal databases that are
     allowed anyway. Local stdio: both limits apply only when set."""
     if db_type == "SQLite":
-        root = os.getenv("MCP_SQLITE_DIR", "")
+        root = settings.sqlite_dir
         if hosted and not root:
             raise TargetRefused("SQLite files are not available on this server.")
-        if any(ch in str(db_path or "") for ch in "?#"):   # a URL parser would cut the path at these
+        if any(ch in str(db_path or "") for ch in "?#"):  # a URL parser would cut the path at these
             raise TargetRefused("SQLite path contains characters that are not allowed.")
         if root:
             path, base = os.path.realpath(db_path or ""), os.path.realpath(root)
             try:
                 inside = os.path.commonpath([path, base]) == base
-            except ValueError:   # different drives
+            except ValueError:  # different drives
                 inside = False
             if not inside:
                 raise TargetRefused(f"SQLite files must be inside {root} (MCP_SQLITE_DIR).")
@@ -162,7 +169,7 @@ def check_target(db_type: str, host: str, db_path: str, hosted: bool) -> str:
         raise TargetRefused(f"Host '{host}' is not in this server's allowed list (MCP_ALLOWED_HOSTS).")
     if not hosted:
         return ""
-    if srv:   # every server the address points to must be public; the driver resolves them again itself
+    if srv:  # every server the address points to must be public; the driver resolves them again itself
         for target in _srv_targets(srv):
             public_address(target)
         return ""
@@ -175,11 +182,12 @@ def public_address(host: str) -> str:
     and URL fetching: on a hosted server, callers must not reach the server's own network."""
     try:
         addresses = sorted({info[4][0] for info in socket.getaddrinfo(host, None)})
-    except (socket.gaierror, UnicodeError):
-        raise TargetRefused(f"Host '{host}' could not be found. Check the address.")
+    except (socket.gaierror, UnicodeError) as exc:
+        raise TargetRefused(f"Host '{host}' could not be found. Check the address.") from exc
     if not addresses or any(_not_public(a) for a in addresses):
-        raise TargetRefused(f"Host '{host}' is on a private or internal network, which this service cannot reach. "
-                            "Use a public address.")
+        raise TargetRefused(
+            f"Host '{host}' is on a private or internal network, which this service cannot reach. Use a public address."
+        )
     return addresses[0]
 
 

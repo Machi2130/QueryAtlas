@@ -1,32 +1,27 @@
-"""
-auth.py — Auth0 JWT verification middleware.
+"""Who is calling the web app: account session tokens, Auth0 JWTs when configured, and the DEV_MODE
+fallback. Used as a FastAPI dependency: `user_id: str = Depends(get_current_user)`."""
 
-Fixes:
-  - No authentication (was the #1 critical gap)
-  - Groq API key sent in plain text — now stored server-side per-user in Redis
-  - No session isolation — g.user_id is set here and used everywhere
-"""
-
-import os
-from dotenv import load_dotenv
-
-load_dotenv()
+import logging
 
 import httpx
-from jose import jwt
-from jose.exceptions import ExpiredSignatureError, JWTClaimsError, JWTError
-
-# FastAPI dependency injection pattern
-# Used as: user_id: str = Depends(get_current_user)
+from dotenv import load_dotenv
 from fastapi import Depends, HTTPException
 from fastapi import status as http_status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jose import jwt
+from jose.exceptions import ExpiredSignatureError, JWTClaimsError, JWTError
+
+from .config import settings
+
+load_dotenv()  # the flags below are read once, at import
 
 _bearer_scheme = HTTPBearer()
 
-AUTH0_DOMAIN   = os.getenv("AUTH0_DOMAIN", "")
-AUTH0_AUDIENCE = os.getenv("AUTH0_AUDIENCE", "")
-DEV_MODE       = os.getenv("DEV_MODE", "false").lower() == "true"
+log = logging.getLogger(__name__)
+
+AUTH0_DOMAIN = settings.auth0_domain
+AUTH0_AUDIENCE = settings.auth0_audience
+DEV_MODE = settings.dev_mode
 
 # In-process JWKS cache — refreshed on key-rotation mismatch.
 _jwks_cache: dict | None = None
@@ -62,12 +57,11 @@ def _find_rsa_key(token: str) -> dict:
 
 
 def _active_policy():
-    import sys
-    app_mod = sys.modules.get("sql_agent.app")
-    if app_mod and hasattr(app_mod, "POLICY"):
-        return app_mod.POLICY
-    from .rbac import POLICY
-    return POLICY
+    """The web runtime's policy (the one a test may have substituted), imported lazily because the web
+    package imports this module."""
+    from .web.runtime import wrt
+
+    return wrt.policy
 
 
 def verify_token(token: str) -> str:
@@ -95,9 +89,7 @@ def verify_token(token: str) -> str:
         return token
 
     if not AUTH0_DOMAIN or not AUTH0_AUDIENCE:
-        raise RuntimeError(
-            "Please sign in with your account and password."
-        )
+        raise RuntimeError("Please sign in with your account and password.")
 
     rsa_key = _find_rsa_key(token)
     try:
@@ -108,12 +100,12 @@ def verify_token(token: str) -> str:
             audience=AUTH0_AUDIENCE,
             issuer=f"https://{AUTH0_DOMAIN}/",
         )
-    except ExpiredSignatureError:
-        raise ValueError("Token has expired.")
+    except ExpiredSignatureError as exc:
+        raise ValueError("Token has expired.") from exc
     except JWTClaimsError as e:
-        raise ValueError(f"Token claims invalid: {e}")
+        raise ValueError(f"Token claims invalid: {e}") from e
     except JWTError as e:
-        raise ValueError(f"Token invalid: {e}")
+        raise ValueError(f"Token invalid: {e}") from e
 
     return payload["sub"]  # e.g. "auth0|abc123"
 
@@ -131,8 +123,7 @@ async def get_current_user(
     try:
         return verify_token(credentials.credentials)
     except (ValueError, RuntimeError) as e:
-        raise HTTPException(status_code=http_status.HTTP_401_UNAUTHORIZED, detail=str(e))
+        raise HTTPException(status_code=http_status.HTTP_401_UNAUTHORIZED, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=http_status.HTTP_401_UNAUTHORIZED, detail=f"Auth error: {e}")
-
-
+        log.warning(f"token verification failed: {type(e).__name__}")
+        raise HTTPException(status_code=http_status.HTTP_401_UNAUTHORIZED, detail=f"Auth error: {e}") from e
